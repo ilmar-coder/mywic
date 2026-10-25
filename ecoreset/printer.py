@@ -128,8 +128,8 @@ class EpsonPrinter:
         if not value or b":NA;" in value:
             raise PrinterError(
                 "a impressora recusou a leitura do endereço %d "
-                "(chave errada ou firmware bloqueado; nesse caso use o reset "
-                "temporário)" % address)
+                "(chave errada ou firmware bloqueado: tente pelo cabo USB, que "
+                "costuma funcionar mesmo assim, ou use o reset temporário)" % address)
         match = _EE_RE.search(value)
         if not match:
             raise PrinterError("resposta inesperada: %r" % value)

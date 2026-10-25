@@ -3,6 +3,7 @@
 import datetime
 import json
 import queue
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -10,9 +11,13 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from . import __version__, maintenance
 from .models import model_names
 from .printer import EpsonPrinter, PrinterError
+from .d4 import D4Error
 from .snmp import SnmpError
+from .usb import UsbCtrlClient, UsbError
 
-ERRORS = (PrinterError, SnmpError, OSError, ValueError)
+ERRORS = (PrinterError, SnmpError, UsbError, D4Error, OSError, ValueError)
+# No Windows o USB ainda não tem acesso à EEPROM (precisa do USBPRINT).
+USB_SUPPORTED = sys.platform != "win32"
 
 
 class App(tk.Tk):
@@ -31,19 +36,26 @@ class App(tk.Tk):
         top = ttk.LabelFrame(self, text="Impressora")
         top.pack(fill="x", padx=10, pady=(10, 5))
 
-        ttk.Label(top, text="IP:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        self.conn = tk.StringVar(value="usb" if USB_SUPPORTED else "rede")
+        ttk.Radiobutton(top, text="Cabo USB", variable=self.conn, value="usb",
+                        state="normal" if USB_SUPPORTED else "disabled").grid(
+            row=0, column=0, sticky="w", padx=5, pady=5)
+        ttk.Radiobutton(top, text="Rede, IP:", variable=self.conn, value="rede").grid(
+            row=0, column=1, sticky="w")
         self.host = tk.StringVar()
-        ttk.Entry(top, textvariable=self.host, width=18).grid(row=0, column=1, sticky="w")
-        ttk.Button(top, text="Detectar", command=self.detect).grid(row=0, column=2, padx=5)
+        ttk.Entry(top, textvariable=self.host, width=16).grid(row=0, column=2, sticky="w")
+        ttk.Button(top, text="Detectar", command=self.detect).grid(row=0, column=3, padx=5)
 
-        ttk.Label(top, text="Modelo:").grid(row=0, column=3, sticky="w", padx=(15, 5))
+        ttk.Label(top, text="Modelo:").grid(row=0, column=4, sticky="w", padx=(10, 5))
         self.model = tk.StringVar()
         ttk.Combobox(top, textvariable=self.model, values=model_names(),
-                     state="readonly", width=12).grid(row=0, column=4, sticky="w")
+                     state="readonly", width=10).grid(row=0, column=5, sticky="w")
 
-        self.info = tk.StringVar(value="Digite o IP da impressora e clique em Detectar.")
-        ttk.Label(top, textvariable=self.info, foreground="#555").grid(
-            row=1, column=0, columnspan=5, sticky="w", padx=5, pady=(0, 5))
+        self.info = tk.StringVar(value=(
+            "Escolha a conexão e clique em Detectar. Pelo USB funciona até em "
+            "firmwares que bloqueiam a rede (como a L3250)."))
+        ttk.Label(top, textvariable=self.info, foreground="#555", wraplength=620).grid(
+            row=1, column=0, columnspan=6, sticky="w", padx=5, pady=(0, 5))
 
         tabs = ttk.Notebook(self)
         tabs.pack(fill="both", expand=True, padx=10, pady=5)
@@ -167,14 +179,31 @@ class App(tk.Tk):
             pass
         self.after(100, self._poll)
 
-    def printer(self):
-        host = self.host.get().strip()
-        if not host:
+    def where(self):
+        return "USB" if self.conn.get() == "usb" else self.host.get().strip()
+
+    def session(self, fn):
+        """Trabalho que conecta (rede ou USB), roda fn(impressora) e desconecta.
+
+        O USB fica preso só durante o trabalho, para não atrapalhar a impressão.
+        """
+        conn, host, model = self.conn.get(), self.host.get().strip(), self.model.get()
+        if conn == "rede" and not host:
             raise PrinterError("digite o IP da impressora")
-        p = EpsonPrinter(host)
-        if self.model.get():
-            p.set_model(self.model.get())
-        return p
+
+        def prepare(p):
+            if model:
+                p.set_model(model)
+            else:
+                p.detect()
+            return fn(p)
+
+        def work():
+            if conn == "usb":
+                with UsbCtrlClient() as client:
+                    return prepare(EpsonPrinter("USB", client=client))
+            return prepare(EpsonPrinter(host))
+        return work
 
     def guarded(self, fn):
         try:
@@ -185,25 +214,25 @@ class App(tk.Tk):
     # ---- ações ------------------------------------------------------------
 
     def detect(self):
-        host = self.host.get().strip()
-        if not host:
-            return messagebox.showerror("EcoReset", "Digite o IP da impressora.")
-        p = EpsonPrinter(host)
+        self.model.set("")
+        work = self.guarded(lambda: self.session(lambda p: (p.model_string(), p.model)))
+        if not work:
+            return
 
         def done(result):
             text, name = result
             if name:
                 self.model.set(name)
-                self.info.set("%s → parâmetros do %s" % (text, name))
+                self.info.set("%s (%s) → parâmetros do %s" % (text, self.where(), name))
             else:
                 self.info.set("%s: modelo não está na lista; escolha um compatível."
                               % (text or "Sem nome"))
-        self.run("Detectando", p.detect, done)
+        self.run("Detectando", work, done)
 
     def read_levels(self):
-        p = self.guarded(self.printer)
-        if p:
-            self.run("Lendo contadores", p.waste_levels, self._show_levels)
+        work = self.guarded(lambda: self.session(lambda p: p.waste_levels()))
+        if work:
+            self.run("Lendo contadores", work, self._show_levels)
 
     def _show_levels(self, levels):
         for label, (bar, text) in self.bars.items():
@@ -215,63 +244,67 @@ class App(tk.Tk):
                 text.set("n/d")
 
     def reset(self):
-        p = self.guarded(self.printer)
-        if not p:
-            return
+        model = self.model.get()
+        if not model:
+            return messagebox.showerror("EcoReset", "Clique em Detectar primeiro.")
         if not messagebox.askyesno("EcoReset", (
-                "Zerar os contadores da almofada da %s em %s?\n\n"
-                "Escolha onde salvar o backup a seguir.") % (p.model, p.host)):
+                "Zerar os contadores da almofada da %s (%s)?\n\n"
+                "Escolha onde salvar o backup a seguir.") % (model, self.where())):
             return
         path = filedialog.asksaveasfilename(
             defaultextension=".json", filetypes=[("Backup", "*.json")],
             initialfile="backup-%s-%s.json" % (
-                p.model, datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
+                model, datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
         if not path:
+            return
+        work = self.guarded(lambda: self.session(lambda p: p.reset_waste(backup_path=path)))
+        if not work:
             return
 
         def done(_):
             messagebox.showinfo("EcoReset", "Contadores zerados.\n"
                                 "Desligue a impressora e ligue de novo.")
             self.read_levels()
-        self.run("Resetando", lambda: p.reset_waste(backup_path=path), done)
+        self.run("Resetando", work, done)
 
     def temp_reset(self):
-        p = self.guarded(self.printer)
-        if not p:
+        def read_serial(p):
+            try:
+                return p.serial_number()
+            except ERRORS:
+                return ""
+        work = self.guarded(lambda: self.session(read_serial))
+        if not work:
             return
 
         def ask(serial):
             serial = simpledialog.askstring(
                 "EcoReset", "Número de série da impressora (está na etiqueta "
                 "e na folha de status):", initialvalue=serial or "", parent=self)
-            if serial and serial.strip():
-                self.run("Reset temporário", lambda: p.temporary_reset(serial.strip()),
-                         lambda _: messagebox.showinfo(
-                             "EcoReset", "Impressora liberada.\n"
-                             "Desligue e ligue de novo."))
-
-        def read_serial():
-            try:
-                return p.serial_number()
-            except ERRORS:
-                return ""
-        self.run("Lendo número de série", read_serial, ask)
+            if not serial or not serial.strip():
+                return
+            reset = self.guarded(lambda: self.session(
+                lambda p: p.temporary_reset(serial.strip())))
+            if reset:
+                self.run("Reset temporário", reset, lambda _: messagebox.showinfo(
+                    "EcoReset", "Impressora liberada.\nDesligue e ligue de novo."))
+        self.run("Lendo número de série", work, ask)
 
     def restore(self):
-        p = self.guarded(self.printer)
-        if not p:
-            return
         path = filedialog.askopenfilename(filetypes=[("Backup", "*.json")])
         if not path:
             return
         with open(path, encoding="utf-8") as f:
             backup = json.load(f)
-        if backup.get("model") != p.model and not messagebox.askyesno(
+        model = self.model.get()
+        if backup.get("model") != model and not messagebox.askyesno(
                 "EcoReset", "Este backup é de %s, não de %s. Continuar?"
-                % (backup.get("model"), p.model)):
+                % (backup.get("model"), model or "?")):
             return
-        self.run("Restaurando", lambda: p.restore(backup),
-                 lambda _: messagebox.showinfo("EcoReset", "Backup restaurado."))
+        work = self.guarded(lambda: self.session(lambda p: p.restore(backup)))
+        if work:
+            self.run("Restaurando", work,
+                     lambda _: messagebox.showinfo("EcoReset", "Backup restaurado."))
 
     def maintain(self, what):
         job = (maintenance.nozzle_check_job() if what == "nozzle"
@@ -299,34 +332,34 @@ class App(tk.Tk):
 
     def ee_read(self):
         def prepare():
-            p = self.printer()
             start = self._int(self.addr, "endereço")
             end = self._int(self.addr_end, "endereço final") if self.addr_end.get().strip() else start
             if end < start or end - start > 1023:
                 raise ValueError("intervalo inválido (máximo 1024 endereços)")
-            return p, start, end
-        args = self.guarded(prepare)
-        if not args:
+            return self.session(lambda p: p.dump(start, end))
+        work = self.guarded(prepare)
+        if not work:
             return
-        p, start, end = args
 
         def done(data):
             self.last_dump = data
             self.ee_out.delete("1.0", "end")
             for a, v in data.items():
                 self.ee_out.insert("end", "%5d (0x%04X): %3d (0x%02X)\n" % (a, a, v, v))
-        self.run("Lendo EEPROM", lambda: p.dump(start, end), done)
+        self.run("Lendo EEPROM", work, done)
 
     def ee_write(self):
-        args = self.guarded(lambda: (self.printer(), self._int(self.addr, "endereço"),
+        args = self.guarded(lambda: (self._int(self.addr, "endereço"),
                                      self._int(self.value, "valor")))
         if not args:
             return
-        p, address, value = args
+        address, value = args
         if not messagebox.askyesno("EcoReset", "Gravar %d no endereço %d?" % (value, address)):
             return
-        self.run("Gravando", lambda: p.write_eeprom(address, value),
-                 lambda _: self.ee_out.insert("end", "Gravado %d em %d.\n" % (value, address)))
+        work = self.guarded(lambda: self.session(lambda p: p.write_eeprom(address, value)))
+        if work:
+            self.run("Gravando", work, lambda _: self.ee_out.insert(
+                "end", "Gravado %d em %d.\n" % (value, address)))
 
     def ee_save(self):
         if not self.last_dump:

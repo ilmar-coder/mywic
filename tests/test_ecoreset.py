@@ -5,10 +5,12 @@ import tempfile
 import threading
 import unittest
 
-from ecoreset import maintenance, snmp
+from ecoreset import d4, maintenance, snmp
+from ecoreset.d4 import EpsonCtrlChannel
 from ecoreset.models import MODELS, find_model
 from ecoreset.printer import (EpsonPrinter, PrinterError, read_oid, shift_key,
                               waste_percent, write_oid)
+from tests.fake_d4 import FakeD4Device
 from tests.fake_printer import FakePrinter
 
 
@@ -143,6 +145,55 @@ class TestWithFakePrinter(unittest.TestCase):
                 client.get("1.3.6.1.2.1.1.1.0")
         finally:
             sock.close()
+
+
+class TestD4(unittest.TestCase):
+    def setUp(self):
+        self.fake = FakePrinter(name="EPSON L3250 Series", read_key=(74, 54),
+                                eeprom={48: 0x10, 49: 0x0C, 0x100: 0x13})
+        self.fake.close()  # só a lógica de respostas, sem o servidor UDP
+
+    def client(self, device):
+        from ecoreset.usb import UsbCtrlClient
+        client = UsbCtrlClient()
+        channel = EpsonCtrlChannel(device)
+        self.assertTrue(channel.open())
+        client.channel = channel
+        client.device = type("Dev", (), {"product": "L3250 Series",
+                                         "close": lambda self: None})()
+        return client
+
+    def test_full_reset_over_d4(self):
+        device = FakeD4Device(self.fake)
+        p = EpsonPrinter("USB", client=self.client(device))
+        self.assertEqual(p.detect(), ("L3250 Series", "ET-2812"))
+        self.assertEqual(p.read_eeprom(48), 0x10)
+        self.assertEqual(p.serial_number(), "X5NY012345")
+        p.reset_waste()
+        self.assertEqual(self.fake.eeprom[48], 0)
+        self.assertEqual(self.fake.eeprom[0x100], 0x12)
+        p.snmp.close()
+        self.assertFalse(device.in_d4, "a sessão D4 precisa terminar com Exit")
+        self.assertEqual(device.log[:3], [d4.INIT, d4.GET_SOCKET_ID, d4.OPEN_CHANNEL])
+
+    def test_silent_interface_returns_false(self):
+        channel = EpsonCtrlChannel(FakeD4Device(self.fake, silent=True))
+        channel.d4.timeout_ms = 50
+        self.assertFalse(channel.d4.enter(timeout_ms=50))
+
+    def test_parse_interfaces_prefers_printer_class(self):
+        from ecoreset.usb import parse_interfaces
+        config = bytes([9, 2, 0, 0, 2, 1, 0, 0xC0, 1,
+                        9, 4, 0, 0, 2, 0xFF, 0, 0, 0,
+                        7, 5, 0x01, 2, 0, 2, 0,
+                        7, 5, 0x82, 2, 0, 2, 0,
+                        9, 4, 1, 0, 2, 7, 1, 2, 0,
+                        7, 5, 0x03, 2, 0, 2, 0,
+                        7, 5, 0x84, 2, 0, 2, 0,
+                        9, 4, 2, 0, 1, 7, 1, 1, 0,
+                        7, 5, 0x05, 2, 0, 2, 0])
+        self.assertEqual(parse_interfaces(config),
+                         [(1, 0, 7, 0x03, 0x84), (0, 0, 0xFF, 0x01, 0x82)])
 
 
 class TestMaintenance(unittest.TestCase):
