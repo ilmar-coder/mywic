@@ -113,6 +113,14 @@ class TestWithFakePrinter(unittest.TestCase):
         with self.assertRaises(PrinterError):
             p.temporary_reset("ERRADO")
 
+    def test_serial_in_field_0x40_like_real_l3250(self):
+        reply = (b"\x00@BDC ST2\r\n\x10\x00\x01\x01\x04\x19\x01\x00"
+                 b"\x40\x0aXAAB402930")
+        from ecoreset.printer import parse_status
+        p = self.printer()
+        p.status = lambda: parse_status(reply)
+        self.assertEqual(p.serial_number(), "XAAB402930")
+
     def test_l3250_uses_et2812_and_commit_clears_bit0(self):
         self.fake.close()
         self.fake = FakePrinter(name="EPSON L3250 Series", read_key=(74, 54),

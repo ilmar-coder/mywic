@@ -222,9 +222,11 @@ class EpsonPrinter:
 
     def serial_number(self):
         """Número de série pelo status (funciona mesmo com a EEPROM bloqueada)."""
-        serial = self.status().get(0x1F, b"").decode("ascii", "replace").strip("\x00 ")
-        if serial:
-            return serial
+        status = self.status()
+        for kind in (0x1F, 0x40):  # o campo varia por modelo (0x40 na L3250)
+            serial = status.get(kind, b"").decode("ascii", "replace").strip("\x00 ")
+            if len(serial) == 10 and serial.isalnum():
+                return serial
         raise PrinterError("não consegui ler o número de série; digite o da etiqueta")
 
     def temporary_reset(self, serial=None):
