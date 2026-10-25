@@ -24,17 +24,26 @@ de cada modelo vêm da documentação pública do projeto
 
 ## Canon
 
-- **O que funciona:** diagnóstico pelo IPP (rede ou USB), com estado, alertas e
-  nível da caixa de manutenção, e a base de "support codes" do manual oficial
-  da G2060 series, explicados em português.
-- **Teste de bicos e limpeza:** só em modelos que aceitam comandos BJL. Os
-  mais novos, como a G2060, só falam IVEC, e o programa avisa em vez de mandar.
+- **Cabo USB (IVEC):** lê o **código exato do erro** (o mesmo do visor), o
+  estado e o nível da caixa de manutenção. Também faz limpeza, limpeza só do
+  preto ou só das cores, limpeza profunda, ink flush, limpeza do rolete e da
+  placa inferior, e teste de bicos. Testado numa G2060 real: o código 7800 e a
+  caixa MC-G02 em 90% foram lidos. Se a impressora estiver com código de erro,
+  a manutenção não é enviada.
+- **Rede:** diagnóstico pelo IPP (estado, alertas e níveis), mais a base de
+  "support codes" do manual oficial da G2060 series, explicados em português.
+- **Modelos antigos (BJL):** teste de bicos e limpeza pela fila da impressora.
+  O programa confere se o modelo aceita BJL antes de enviar.
 - **Almofada:** não existe forma pública de zerar o contador da almofada Canon
   (erro 5B00). Isso é feito pela ferramenta de serviço da Canon, que é
   proprietária. Modelos com caixa de manutenção (G2060, G3160...) não precisam
   de reset: troca-se a caixa (códigos 1726/1727).
-- **Código exato do erro:** a G2060 não informa o código pelo IPP. Para ver o
-  número, olhe o visor/luzes e use **Consultar código**.
+- **Código exato do erro:** pelo IPP (rede), a G2060 não informa o código.
+  Use o cabo USB, ou olhe o visor e use **Consultar código**.
+
+O protocolo IVEC foi implementado a partir da descrição pública do projeto
+[canon-universal-driver](https://github.com/noble6/canon-universal-driver)
+(docs/PROTOCOL_IVEC.md). Não usa nenhum código ou biblioteca da Canon.
 
 ## Regravar a EEPROM (Epson)
 
@@ -98,7 +107,8 @@ Linha de comando (qualquer sistema com Python 3.8+):
 ```
 python -m ecoreset diagnose usb        # erros da Epson, com correção
 python -m ecoreset code 1300           # explica um código
-python -m ecoreset canon-status Canon_G2060_series_2
+python -m ecoreset canon-status usb    # Canon: código exato pelo cabo
+python -m ecoreset canon-maint limpeza # ou teste-bicos, limpeza-profunda...
 python -m ecoreset write-image usb backup.json
 python -m ecoreset levels usb          # pelo cabo USB
 python -m ecoreset reset usb

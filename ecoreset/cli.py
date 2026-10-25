@@ -7,6 +7,7 @@ import sys
 
 from . import canon, ipp, maintenance
 from .errors import explain_epson_error, search
+from .ivec import MAINTENANCE, CanonUsb, IvecError
 from .models import model_names
 from .printer import EpsonPrinter, PrinterError, load_image
 from .snmp import SnmpError
@@ -57,7 +58,9 @@ def main(argv=None):
     sub.add_parser("diagnose", help="erros da Epson, com causa e correção").add_argument(
         "host")
     cs = sub.add_parser("canon-status", help="erros da Canon (IP ou fila do sistema)")
-    cs.add_argument("where", help="IP ou nome da fila (lpstat -e)")
+    cs.add_argument("where", help="usb (IVEC, código exato), IP ou nome da fila")
+    cm = sub.add_parser("canon-maint", help="manutenção da Canon pelo USB (IVEC)")
+    cm.add_argument("operation", choices=list(MAINTENANCE))
     sub.add_parser("code", help="explica um código de erro").add_argument("code")
     wi = sub.add_parser("write-image", help="regrava a EEPROM a partir de um arquivo")
     wi.add_argument("host")
@@ -77,11 +80,20 @@ def main(argv=None):
         return 0 if found else 1
 
     try:
+        if args.cmd == "canon-maint":
+            with CanonUsb() as c:
+                c.maintenance(args.operation)
+            print("%s enviado para a Canon." % args.operation)
+            return 0
         if args.cmd == "canon-status":
             where = args.where
-            url = (ipp.find_queue_url(where) if not re.match(r"^[\d.]+$", where)
-                   else "ipp://%s:631/ipp/print" % where)
-            d = canon.diagnose(url)
+            if where.lower() == "usb":
+                with CanonUsb() as c:
+                    d = c.diagnose()
+            else:
+                url = (ipp.find_queue_url(where) if not re.match(r"^[\d.]+$", where)
+                       else "ipp://%s:631/ipp/print" % where)
+                d = canon.diagnose(url)
             print("Modelo: %s\nEstado: %s" % (d["modelo"], d["estado"]))
             for line in [d["mensagem"]] + d["motivos"]:
                 if line:
@@ -113,7 +125,8 @@ def main(argv=None):
             return _run(args, p)
         finally:
             getattr(p.snmp, "close", lambda: None)()
-    except (PrinterError, SnmpError, UsbError, ipp.IppError, OSError, ValueError) as e:
+    except (PrinterError, SnmpError, UsbError, ipp.IppError, IvecError, OSError,
+            ValueError) as e:
         print("Erro: %s" % e, file=sys.stderr)
         return 2
 

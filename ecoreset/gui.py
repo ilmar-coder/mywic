@@ -13,10 +13,12 @@ from .errors import explain_epson_error, search
 from .models import model_names
 from .printer import EpsonPrinter, PrinterError, load_image
 from .d4 import D4Error
+from .ivec import MAINTENANCE, CanonUsb, IvecError
 from .snmp import SnmpError
 from .usb import UsbCtrlClient, UsbError
 
-ERRORS = (PrinterError, SnmpError, UsbError, D4Error, ipp.IppError, OSError, ValueError)
+ERRORS = (PrinterError, SnmpError, UsbError, D4Error, ipp.IppError, IvecError, OSError,
+          ValueError)
 # No Windows o USB ainda não tem acesso à EEPROM (precisa do USBPRINT).
 USB_SUPPORTED = sys.platform != "win32"
 
@@ -164,10 +166,19 @@ class App(tk.Tk):
             "nozzle")).pack(side="left")
         ttk.Button(buttons, text="Limpeza de cabeça", command=lambda: self.maintain(
             "clean")).pack(side="left", padx=10)
+        canon_row = ttk.Frame(f)
+        canon_row.grid(row=3, column=0, columnspan=2, pady=(0, 10), sticky="w")
+        ttk.Label(canon_row, text="Canon pelo cabo USB (IVEC):").pack(side="left")
+        self.ivec_op = tk.StringVar(value="limpeza")
+        ttk.Combobox(canon_row, textvariable=self.ivec_op, values=list(MAINTENANCE),
+                     state="readonly", width=16).pack(side="left", padx=5)
+        ttk.Button(canon_row, text="Executar", command=self.maintain_ivec).pack(side="left")
         ttk.Label(f, wraplength=480, foreground="#555", text=(
             "Coloque papel A4 antes do teste de bicos. Cada limpeza gasta tinta e "
-            "enche a almofada: faça no máximo duas seguidas.")).grid(
-            row=3, column=0, columnspan=2, sticky="w")
+            "enche a almofada/caixa de manutenção: faça no máximo duas seguidas. "
+            "Limpeza profunda e ink-flush gastam muita tinta. Na Canon, o programa "
+            "não envia nada se a impressora estiver com código de erro.")).grid(
+            row=4, column=0, columnspan=2, sticky="w")
         return f
 
     def _tab_eeprom(self, parent):
@@ -380,6 +391,12 @@ class App(tk.Tk):
             conn = self.conn.get()
 
             def work():
+                if conn == "usb":
+                    try:  # IVEC pelo cabo: traz o código exato do erro
+                        with CanonUsb() as c:
+                            return c.diagnose()
+                    except (IvecError, UsbError):
+                        pass  # sem IVEC no USB: tenta o IPP da fila instalada
                 if conn == "rede" and host:
                     url = "ipp://%s:631/ipp/print" % host
                 else:
@@ -474,7 +491,22 @@ class App(tk.Tk):
                     "Desligue e ligue a impressora."))
         self.run("Comparando com a impressora", work, planned)
 
+    def maintain_ivec(self, name=None):
+        name = name or self.ivec_op.get()
+        heavy = name in ("limpeza-profunda", "ink-flush")
+        if not messagebox.askyesno("EcoReset", "Enviar '%s' para a Canon no USB?%s" % (
+                name, "\n\nEsta operação gasta bastante tinta." if heavy else "")):
+            return
+
+        def work():
+            with CanonUsb() as c:
+                c.maintenance(name)
+        self.run("Enviando %s" % name, work,
+                 lambda _: self.status.set("%s enviado para a Canon." % name))
+
     def maintain(self, what):
+        if self.brand.get() == "canon" and self.conn.get() == "usb":
+            return self.maintain_ivec("teste-bicos" if what == "nozzle" else "limpeza")
         if self.brand.get() == "canon":
             job = canon.nozzle_check_job() if what == "nozzle" else canon.head_cleaning_job()
         else:

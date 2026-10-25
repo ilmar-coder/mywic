@@ -93,8 +93,8 @@ def _check(code, what):
     return code
 
 
-def parse_interfaces(config):
-    """Interfaces com par de endpoints bulk: [(número, alt, classe, ep_out, ep_in)]."""
+def interface_list(config):
+    """Interfaces com par de endpoints bulk, como dicionários (num, alt, cls, proto...)."""
     found, current, pos = [], None, 0
     while pos + 2 <= len(config):
         length, kind = config[pos], config[pos + 1]
@@ -102,14 +102,19 @@ def parse_interfaces(config):
             break
         d = config[pos:pos + length]
         if kind == 4 and length >= 9:
-            current = {"num": d[2], "alt": d[3], "cls": d[5], "out": None, "in": None}
+            current = {"num": d[2], "alt": d[3], "cls": d[5], "proto": d[7],
+                       "out": None, "in": None}
             found.append(current)
         elif kind == 5 and length >= 7 and current is not None and d[3] & 3 == 2:
             current["in" if d[2] & 0x80 else "out"] = d[2]
         pos += length
+    return [f for f in found if f["out"] and f["in"]]
+
+
+def parse_interfaces(config):
+    """[(número, alt, classe, ep_out, ep_in)], impressora (classe 7) primeiro."""
     result = [(f["num"], f["alt"], f["cls"], f["out"], f["in"])
-              for f in found if f["out"] and f["in"]]
-    # impressora (classe 7) primeiro, depois as de fabricante (0xFF)
+              for f in interface_list(config)]
     return sorted(result, key=lambda r: (r[2] != 7, r[2] != 0xFF, r[0], r[1]))
 
 
@@ -180,6 +185,11 @@ class UsbDevice:
 
 
 def _epson_devices():
+    return find_devices(EPSON_VENDOR)
+
+
+def find_devices(vendor):
+    """(lib, ctx, lista, [(dispositivo, descritor)]) dos aparelhos do fabricante."""
     lib = libusb()
     ctx = ctypes.c_void_p()
     _check(lib.libusb_init(ctypes.byref(ctx)), "iniciar o libusb")
@@ -189,7 +199,7 @@ def _epson_devices():
     for i in range(count):
         desc = _DeviceDescriptor()
         if lib.libusb_get_device_descriptor(devices[i], ctypes.byref(desc)) == 0 \
-                and desc.idVendor == EPSON_VENDOR:
+                and desc.idVendor == vendor:
             found.append((devices[i], desc))
     return lib, ctx, devices, found
 

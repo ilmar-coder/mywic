@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import socket
 import tempfile
 import threading
@@ -273,6 +274,87 @@ class TestDiagnostics(unittest.TestCase):
         self.assertEqual(d["estado"], "Erro")
         self.assertEqual(d["problemas"][0].title, "Almofada de tinta cheia")
         self.assertEqual(d["avisos"], ["Tinta baixa (preto ou amarelo)"])
+
+
+G2060_STATUS = (
+    b'<?xml version="1.0" encoding="UTF-8"?>\r\n<cmd xmlns:ivec="http://www.canon.com/ns/'
+    b'cmd/2008/07/common/">\r\n<ivec:contents>\r\n<ivec:operation>GetStatusResponse'
+    b'</ivec:operation>\r\n<ivec:param_set servicetype="print">\r\n<ivec:response>OK'
+    b'</ivec:response>\r\n<ivec:status>notready</ivec:status>\r\n<ivec:status_detail>'
+    b'AttentionRequired</ivec:status_detail>\r\n<ivec:current_support_code>7800'
+    b'</ivec:current_support_code>\r\n<ivec:marker_info><ivec:ink><ivec:level>-2'
+    b'</ivec:level></ivec:ink></ivec:marker_info>\r\n<ivec:wasteink>\r\n<ivec:item>\r\n'
+    b'<ivec:icon>warning</ivec:icon>\r\n<ivec:model>MC-G02</ivec:model>\r\n<ivec:level>90'
+    b'</ivec:level>\r\n</ivec:item>\r\n</ivec:wasteink>\r\n<ivec:status_detail_list>'
+    b'<ivec:item id="11"><ivec:error_code>7800</ivec:error_code></ivec:item>'
+    b'</ivec:status_detail_list>\r\n</ivec:param_set>\r\n</ivec:contents>\r\n</cmd>')
+
+
+class FakeIvecDevice:
+    """Responde a toda leitura com o status, como as Canon IVEC."""
+
+    def __init__(self, status):
+        self.status, self.written, self.pending = status, [], status
+
+    def read(self, timeout_ms):
+        data, self.pending = self.pending, b""
+        return data
+
+    def write(self, data):
+        self.written.append(data)
+        self.pending = self.status
+
+
+class TestIvec(unittest.TestCase):
+    def test_parse_real_g2060_status(self):
+        from ecoreset import ivec
+        st = ivec.parse_status(G2060_STATUS)
+        self.assertEqual(st["status"], "notready")
+        self.assertEqual(st["support_code"], "7800")
+        self.assertEqual(st["maintenance_box"], [("MC-G02", 90, "warning")])
+        self.assertEqual(st["error_codes"], [])
+
+    def test_maintenance_job_layout(self):
+        import datetime as dt
+        from ecoreset import ivec
+        job = ivec.maintenance_job("limpeza", now=dt.datetime(2026, 10, 25, 17, 0, 0)).decode()
+        ops = re.findall(r"<ivec:operation>(\w+)</ivec:operation>", job)
+        self.assertEqual(ops, ["StartJob", "SetJobConfiguration", "Cleaning", "EndJob"])
+        self.assertIn('<ivec:param_set servicetype="maintenance"><ivec:inkgroup>all'
+                      '</ivec:inkgroup><ivec:type>regular</ivec:type><ivec:jobID>00000002'
+                      '</ivec:jobID>', job)
+        self.assertIn("<ivec:datetime>20261025170000</ivec:datetime>", job)
+        self.assertEqual(job.count("<?xml"), 4)
+        nozzle = ivec.maintenance_job("teste-bicos").decode()
+        self.assertIn("<ivec:type>nozzle_check</ivec:type>", nozzle)
+        self.assertNotIn("inkgroup", nozzle)
+
+    def test_maintenance_refused_on_error_and_sent_when_idle(self):
+        from ecoreset import ivec
+        canon_usb = ivec.CanonUsb()
+        canon_usb.device = FakeIvecDevice(G2060_STATUS)
+        with self.assertRaisesRegex(ivec.IvecError, "7800"):
+            canon_usb.maintenance("limpeza")
+        self.assertEqual(canon_usb.device.written, [])
+        idle = G2060_STATUS.replace(b"notready", b"idle").replace(
+            b"<ivec:current_support_code>7800", b"<ivec:current_support_code>0").replace(
+            b"<ivec:error_code>7800", b"<ivec:error_code>0")
+        canon_usb.device = FakeIvecDevice(idle)
+        canon_usb.maintenance("teste-bicos")
+        self.assertIn(b"nozzle_check", canon_usb.device.written[-1])
+        canon_usb.device = None
+
+    def test_diagnose_explains_code(self):
+        from ecoreset import ivec
+        canon_usb = ivec.CanonUsb()
+        canon_usb.device = FakeIvecDevice(G2060_STATUS)
+        canon_usb.device.product = "G2060 series"
+        d = canon_usb.diagnose()
+        self.assertEqual(d["estado"], "Não está pronta")
+        self.assertEqual([p.code for p in d["problemas"]], ["7800"])
+        self.assertTrue(d["problemas"][0].service)
+        self.assertEqual(d["tintas"], [("Caixa de manutenção MC-G02", "90%")])
+        canon_usb.device = None
 
 
 class TestEepromImage(unittest.TestCase):
