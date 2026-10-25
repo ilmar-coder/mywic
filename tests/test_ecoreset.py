@@ -196,6 +196,125 @@ class TestD4(unittest.TestCase):
                          [(1, 0, 7, 0x03, 0x84), (0, 0, 0xFF, 0x01, 0x82)])
 
 
+def _ipp_response(attrs):
+    """Monta uma resposta IPP com atributos de impressora (grupo 0x04)."""
+    import struct
+    body = struct.pack(">BBHI", 1, 1, 0, 1) + b"\x01" + b"\x04"
+    for name, (tag, values) in attrs.items():
+        for i, v in enumerate(values):
+            n = name.encode() if i == 0 else b""
+            raw = struct.pack(">i", v) if tag in (0x21, 0x23) else v.encode()
+            body += struct.pack(">BH", tag, len(n)) + n + struct.pack(">H", len(raw)) + raw
+    return body + b"\x03"
+
+
+class TestDiagnostics(unittest.TestCase):
+    def test_canon_codes_from_official_list(self):
+        from ecoreset.errors import explain_canon, search
+        self.assertEqual(explain_canon("1726").title, "Caixa de manutenção cheia")
+        self.assertFalse(explain_canon("1300").service)
+        self.assertTrue(explain_canon("5c30").service)
+        self.assertIn("não catalogado", explain_canon("9999").title)
+        self.assertTrue(any(p.code == "1300" for p in search("1300")))
+        self.assertTrue(any(p.brand == "Epson" for p in search("almofada")))
+
+    def test_ipp_parse_and_canon_diagnose(self):
+        from ecoreset import canon, ipp
+        data = _ipp_response({
+            "printer-make-and-model": (0x41, ["Canon G2060 series"]),
+            "printer-state": (0x23, [5]),
+            "printer-state-reasons": (0x44, ["media-jam-error", "marker-supply-low-warning"]),
+            "printer-state-message": (0x41, ["Support Code: 1300"]),
+            "marker-names": (0x41, ["Black", "Color"]),
+            "marker-levels": (0x21, [80, 15]),
+        })
+        status, attrs = ipp.parse_response(data)
+        self.assertEqual(status, 0)
+        self.assertEqual(attrs["marker-levels"], [80, 15])
+        d = canon.diagnose_attrs(attrs)
+        self.assertEqual(d["estado"], "Parada")
+        self.assertEqual(d["motivos"], ["Papel enroscado", "Tinta baixa"])
+        self.assertEqual([p.code for p in d["problemas"]], ["1300"])
+        self.assertEqual(d["tintas"], [("Black", "80%"), ("Color", "15%")])
+
+    def test_canon_command_sets_from_real_g2060_device_id(self):
+        from ecoreset import canon
+        attrs = {"printer-device-id": [
+            "MFG:Canon;CMD:IVEC,URF;SOJ:CHMPu;MDL:G2060 series;CLS:PRINTER;STA:10;"]}
+        self.assertEqual(canon.command_sets(attrs), ["IVEC", "URF"])
+        stopped = canon.diagnose_attrs({"printer-state": [5],
+                                        "printer-state-reasons": ["other-error"],
+                                        "marker-names": ["Cyan", "MC"],
+                                        "marker-levels": [-2, 90]})
+        self.assertIn("não informou o código", stopped["mensagem"])
+        self.assertEqual(stopped["tintas"], [("Cyan", "sem sensor"), ("MC", "90%")])
+
+    def test_ipp_request_is_well_formed(self):
+        from ecoreset import ipp
+        req = ipp.build_request("ipp://1.2.3.4/ipp/print")
+        self.assertEqual(req[:4], b"\x01\x01\x00\x0b")
+        self.assertTrue(req.endswith(b"ipp://1.2.3.4/ipp/print\x03"))
+
+    def test_canon_bjl_jobs(self):
+        from ecoreset import canon
+        self.assertEqual(canon.nozzle_check_job(),
+                         b"\x1b[K\x02\x00\x00\x1fBJLSTART\n@TestPrint=NozzleCheck\nBJLEND\n")
+        self.assertIn(b"@Cleaning=1ALL\n", canon.head_cleaning_job())
+
+    def test_epson_diagnose_waste_ink_error(self):
+        from ecoreset.printer import parse_status
+        items = b"\x01\x01\x00" + b"\x02\x01\x10" + b"\x04\x01\x10"
+        reply = b"\x00@BDC ST2\r\n" + len(items).to_bytes(2, "little") + items
+        fake = FakePrinter()
+        fake.close()
+        p = EpsonPrinter("x", client=fake)
+        p.status = lambda: parse_status(reply)
+        d = p.diagnose()
+        self.assertEqual(d["estado"], "Erro")
+        self.assertEqual(d["problemas"][0].title, "Almofada de tinta cheia")
+        self.assertEqual(d["avisos"], ["Tinta baixa (preto ou amarelo)"])
+
+
+class TestEepromImage(unittest.TestCase):
+    def setUp(self):
+        self.fake = FakePrinter(name="EPSON L3250 Series", read_key=(74, 54),
+                                eeprom={48: 5, 49: 6, 1604: ord("X"), 0x780: 0xAA})
+
+    def tearDown(self):
+        self.fake.close()
+
+    def test_json_image_plan_protects_serial_and_mac(self):
+        from ecoreset.printer import load_image
+        p = EpsonPrinter("127.0.0.1", port=self.fake.port, timeout=0.5, retries=0,
+                         model="ET-2812")
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "img.json")
+            with open(path, "w") as f:
+                json.dump({"model": "ET-2812",
+                           "eeprom": {"48": 0, "49": 6, "1604": ord("Z"), "1920": 0}}, f)
+            image, model = load_image(path)
+            changes, skipped = p.plan_image(image)
+            self.assertEqual(model, "ET-2812")
+            self.assertEqual(changes, [(48, 5, 0)])
+            self.assertEqual(skipped, [1604, 1920])
+            backup = os.path.join(d, "b.json")
+            p.write_image(changes, backup_path=backup)
+            with open(backup) as f:
+                self.assertEqual(json.load(f)["eeprom"], {"48": 5})
+        self.assertEqual(self.fake.eeprom[48], 0)
+        self.assertEqual(self.fake.eeprom[1604], ord("X"))
+
+    def test_binary_image_with_start_address(self):
+        from ecoreset.printer import load_image
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "dump.bin")
+            with open(path, "wb") as f:
+                f.write(bytes([1, 2, 3]))
+            image, model = load_image(path, start=47)
+        self.assertEqual(image, {47: 1, 48: 2, 49: 3})
+        self.assertIsNone(model)
+
+
 class TestMaintenance(unittest.TestCase):
     def test_jobs(self):
         job = maintenance.nozzle_check_job()

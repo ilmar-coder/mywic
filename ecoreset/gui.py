@@ -8,14 +8,15 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from . import __version__, maintenance
+from . import __version__, canon, ipp, maintenance
+from .errors import explain_epson_error, search
 from .models import model_names
-from .printer import EpsonPrinter, PrinterError
+from .printer import EpsonPrinter, PrinterError, load_image
 from .d4 import D4Error
 from .snmp import SnmpError
 from .usb import UsbCtrlClient, UsbError
 
-ERRORS = (PrinterError, SnmpError, UsbError, D4Error, OSError, ValueError)
+ERRORS = (PrinterError, SnmpError, UsbError, D4Error, ipp.IppError, OSError, ValueError)
 # No Windows o USB ainda não tem acesso à EEPROM (precisa do USBPRINT).
 USB_SUPPORTED = sys.platform != "win32"
 
@@ -51,14 +52,24 @@ class App(tk.Tk):
         ttk.Combobox(top, textvariable=self.model, values=model_names(),
                      state="readonly", width=10).grid(row=0, column=5, sticky="w")
 
+        ttk.Label(top, text="Marca:").grid(row=1, column=0, sticky="w", padx=5)
+        self.brand = tk.StringVar(value="epson")
+        brands = ttk.Frame(top)
+        brands.grid(row=1, column=1, columnspan=5, sticky="w")
+        ttk.Radiobutton(brands, text="Epson", variable=self.brand, value="epson",
+                        command=self._brand_changed).pack(side="left")
+        ttk.Radiobutton(brands, text="Canon", variable=self.brand, value="canon",
+                        command=self._brand_changed).pack(side="left", padx=10)
+
         self.info = tk.StringVar(value=(
             "Escolha a conexão e clique em Detectar. Pelo USB funciona até em "
             "firmwares que bloqueiam a rede (como a L3250)."))
         ttk.Label(top, textvariable=self.info, foreground="#555", wraplength=620).grid(
-            row=1, column=0, columnspan=6, sticky="w", padx=5, pady=(0, 5))
+            row=2, column=0, columnspan=6, sticky="w", padx=5, pady=(0, 5))
 
         tabs = ttk.Notebook(self)
         tabs.pack(fill="both", expand=True, padx=10, pady=5)
+        tabs.add(self._tab_diagnose(tabs), text="Diagnóstico")
         tabs.add(self._tab_waste(tabs), text="Almofada de tinta")
         tabs.add(self._tab_maintenance(tabs), text="Manutenção")
         tabs.add(self._tab_eeprom(tabs), text="EEPROM")
@@ -66,6 +77,43 @@ class App(tk.Tk):
         self.status = tk.StringVar(value="Pronto.")
         ttk.Label(self, textvariable=self.status, relief="sunken", anchor="w").pack(
             fill="x", side="bottom")
+
+    def _brand_changed(self):
+        if self.brand.get() == "canon":
+            self.model.set("")
+            self.info.set(
+                "Canon: diagnóstico (códigos de erro) e manutenção. O contador da "
+                "almofada da Canon só zera com a ferramenta de serviço da marca; "
+                "modelos com caixa de manutenção (G2060...) só precisam trocar a caixa.")
+            names = [n for n in maintenance.installed_printers() if "CANON" in n.upper()]
+        else:
+            self.info.set("Escolha a conexão e clique em Detectar.")
+            names = [n for n in maintenance.installed_printers() if "EPSON" in n.upper()]
+        if names:
+            self.winprinter.set(names[0])
+
+    def _tab_diagnose(self, parent):
+        f = ttk.Frame(parent, padding=10)
+        top = ttk.Frame(f)
+        top.grid(row=0, column=0, sticky="w")
+        ttk.Button(top, text="Ler erros da impressora", command=self.diagnose).pack(
+            side="left")
+        ttk.Label(top, text="   Consultar código:").pack(side="left")
+        self.code = tk.StringVar()
+        entry = ttk.Entry(top, textvariable=self.code, width=10)
+        entry.pack(side="left", padx=5)
+        entry.bind("<Return>", lambda _: self.lookup_code())
+        ttk.Button(top, text="Buscar", command=self.lookup_code).pack(side="left")
+        self.diag_out = tk.Text(f, height=16, width=72, wrap="word", font=("Helvetica", 11))
+        self.diag_out.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+        f.rowconfigure(1, weight=1)
+        f.columnconfigure(0, weight=1)
+        ttk.Label(f, foreground="#555", wraplength=620, text=(
+            "Epson: lê pelo USB ou pela rede. Canon: pela rede (IP) ou pela impressora "
+            "instalada no computador escolhida na aba Manutenção. Também dá para "
+            "digitar um código (ex.: 1300, 5B00, 0x10) ou uma palavra (ex.: papel).")).grid(
+            row=2, column=0, sticky="w", pady=(5, 0))
+        return f
 
     def _tab_waste(self, parent):
         f = ttk.Frame(parent, padding=10)
@@ -138,6 +186,8 @@ class App(tk.Tk):
         ttk.Button(buttons, text="Ler", command=self.ee_read).pack(side="left")
         ttk.Button(buttons, text="Gravar", command=self.ee_write).pack(side="left", padx=10)
         ttk.Button(buttons, text="Salvar leitura…", command=self.ee_save).pack(side="left")
+        ttk.Button(buttons, text="Regravar de arquivo…", command=self.ee_image).pack(
+            side="left", padx=10)
         self.ee_out = tk.Text(f, height=12, width=60, font=("Consolas", 10))
         self.ee_out.grid(row=2, column=0, columnspan=6, sticky="nsew")
         f.rowconfigure(2, weight=1)
@@ -188,6 +238,9 @@ class App(tk.Tk):
         O USB fica preso só durante o trabalho, para não atrapalhar a impressão.
         """
         conn, host, model = self.conn.get(), self.host.get().strip(), self.model.get()
+        if self.brand.get() == "canon":
+            raise PrinterError("esta função é só para Epson. Na Canon, use as abas "
+                               "Diagnóstico e Manutenção.")
         if conn == "rede" and not host:
             raise PrinterError("digite o IP da impressora")
 
@@ -306,9 +359,127 @@ class App(tk.Tk):
             self.run("Restaurando", work,
                      lambda _: messagebox.showinfo("EcoReset", "Backup restaurado."))
 
+    def _show_problems(self, lines, problems):
+        out = self.diag_out
+        out.delete("1.0", "end")
+        for line in lines:
+            out.insert("end", line + "\n")
+        if not problems:
+            out.insert("end", "\nNenhum erro encontrado.\n")
+        for p in problems:
+            out.insert("end", "\n%s %s: %s\n" % (p.brand, p.code, p.title))
+            out.insert("end", "Causa: %s\n" % p.cause)
+            out.insert("end", "Correção: %s\n" % p.fix)
+            if p.service:
+                out.insert("end", "Pode exigir assistência técnica.\n")
+
+    def diagnose(self):
+        if self.brand.get() == "canon":
+            host = self.host.get().strip()
+            queue_name = self.winprinter.get()
+            conn = self.conn.get()
+
+            def work():
+                if conn == "rede" and host:
+                    url = "ipp://%s:631/ipp/print" % host
+                else:
+                    url = ipp.find_queue_url(queue_name)
+                return canon.diagnose(url)
+
+            def done(d):
+                lines = ["Modelo: %s" % d["modelo"], "Estado: %s" % d["estado"]]
+                if d["mensagem"]:
+                    lines.append("Mensagem: %s" % d["mensagem"])
+                lines += ["Alerta: %s" % m for m in d["motivos"]]
+                lines += ["Nível %s: %s" % (n, v) for n, v in d["tintas"]]
+                self._show_problems(lines, d["problemas"])
+            return self.run("Lendo erros", work, done)
+
+        work = self.guarded(lambda: self.session(lambda p: p.diagnose()))
+        if work:
+            self.run("Lendo erros", work, lambda d: self._show_problems(
+                ["Estado: %s" % d["estado"]] + ["Aviso: %s" % a for a in d["avisos"]],
+                d["problemas"]))
+
+    def lookup_code(self):
+        text = self.code.get().strip()
+        if not text:
+            return
+        if text.lower().startswith("0x"):
+            try:
+                found = [explain_epson_error(int(text, 16))]
+            except ValueError:
+                found = []
+        else:
+            found = search(text)
+        self._show_problems(["Busca: %s" % text], found)
+        if not found:
+            self.diag_out.insert("end", "(nada encontrado)\n")
+
+    def ee_image(self):
+        path = filedialog.askopenfilename(filetypes=[
+            ("EEPROM (JSON ou binário)", "*.json *.bin"), ("Todos", "*")])
+        if not path:
+            return
+        start = 0
+        if not path.lower().endswith(".json"):
+            start = simpledialog.askinteger(
+                "EcoReset", "Endereço inicial do arquivo binário:", initialvalue=0,
+                minvalue=0, maxvalue=0xFFFF, parent=self)
+            if start is None:
+                return
+        loaded = self.guarded(lambda: load_image(path, start))
+        if not loaded:
+            return
+        image, file_model = loaded
+        model = self.model.get()
+        if file_model and model and file_model != model and not messagebox.askyesno(
+                "EcoReset", "O arquivo é de %s e a impressora é %s. Gravar dados de "
+                "outro modelo pode travá-la. Continuar mesmo assim?" % (file_model, model)):
+            return
+        include = messagebox.askyesno(
+            "EcoReset", "Gravar também número de série e MAC que estiverem no arquivo?\n\n"
+            "Responda NÃO, a menos que o arquivo seja backup desta mesma impressora.",
+            default="no")
+        work = self.guarded(lambda: self.session(
+            lambda p: p.plan_image(image, include_protected=include)))
+        if not work:
+            return
+
+        def planned(result):
+            changes, skipped = result
+            out = self.ee_out
+            out.delete("1.0", "end")
+            out.insert("end", "%d endereço(s) diferente(s); %d protegido(s) ignorado(s).\n"
+                       % (len(changes), len(skipped)))
+            for a, old, new in changes[:200]:
+                out.insert("end", "%5d (0x%04X): %3d -> %3d\n" % (a, a, old, new))
+            if not changes:
+                return messagebox.showinfo("EcoReset", "Nada a gravar: a impressora já "
+                                           "tem esses valores.")
+            if not messagebox.askyesno("EcoReset", "Gravar %d endereço(s)? Os valores "
+                                       "atuais serão salvos antes." % len(changes)):
+                return
+            backup = filedialog.asksaveasfilename(
+                defaultextension=".json", filetypes=[("Backup", "*.json")],
+                initialfile="backup-antes-regravar-%s.json"
+                % datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+            if not backup:
+                return
+            write = self.guarded(lambda: self.session(
+                lambda p: p.write_image(changes, backup_path=backup)))
+            if write:
+                self.run("Regravando", write, lambda _: messagebox.showinfo(
+                    "EcoReset", "EEPROM regravada e conferida.\n"
+                    "Desligue e ligue a impressora."))
+        self.run("Comparando com a impressora", work, planned)
+
     def maintain(self, what):
-        job = (maintenance.nozzle_check_job() if what == "nozzle"
-               else maintenance.head_cleaning_job())
+        if self.brand.get() == "canon":
+            job = canon.nozzle_check_job() if what == "nozzle" else canon.head_cleaning_job()
+        else:
+            job = (maintenance.nozzle_check_job() if what == "nozzle"
+                   else maintenance.head_cleaning_job())
         if self.via.get() == "instalada":
             name = self.winprinter.get()
             if not name:
@@ -319,6 +490,14 @@ class App(tk.Tk):
             if not host:
                 return messagebox.showerror("EcoReset", "Digite o IP da impressora.")
             work = lambda: maintenance.send_raw_network(host, job)
+        if self.brand.get() == "canon":
+            send = work
+            url_of = ((lambda: ipp.find_queue_url(name)) if self.via.get() == "instalada"
+                      else (lambda: "ipp://%s:631/ipp/print" % host))
+
+            def work():
+                canon.check_bjl(url_of())  # os modelos só-IVEC ignorariam o trabalho
+                send()
         label = "Teste de bicos" if what == "nozzle" else "Limpeza de cabeça"
         self.run("Enviando " + label.lower(), work,
                  lambda _: self.status.set(label + " enviado."))

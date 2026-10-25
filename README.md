@@ -16,6 +16,40 @@ WICReset. O protocolo (comandos EPSON-CTRL por SNMP) e as chaves e endereços
 de cada modelo vêm da documentação pública do projeto
 [epson_print_conf](https://github.com/Ircama/epson_print_conf), de Ircama.
 
+- **Diagnóstico de erros:** lê o erro atual da impressora e explica causa,
+  correção e se precisa de assistência. Também consulta um código digitado
+  (ex.: `1300`, `5B00`, `0x10`) ou uma palavra (ex.: `papel`).
+- **Regravar EEPROM:** a partir de um arquivo (backup/leitura do EcoReset em
+  JSON, ou um dump binário).
+
+## Canon
+
+- **O que funciona:** diagnóstico pelo IPP (rede ou USB), com estado, alertas e
+  nível da caixa de manutenção, e a base de "support codes" do manual oficial
+  da G2060 series, explicados em português.
+- **Teste de bicos e limpeza:** só em modelos que aceitam comandos BJL. Os
+  mais novos, como a G2060, só falam IVEC, e o programa avisa em vez de mandar.
+- **Almofada:** não existe forma pública de zerar o contador da almofada Canon
+  (erro 5B00). Isso é feito pela ferramenta de serviço da Canon, que é
+  proprietária. Modelos com caixa de manutenção (G2060, G3160...) não precisam
+  de reset: troca-se a caixa (códigos 1726/1727).
+- **Código exato do erro:** a G2060 não informa o código pelo IPP. Para ver o
+  número, olhe o visor/luzes e use **Consultar código**.
+
+## Regravar a EEPROM (Epson)
+
+Nenhum fabricante publica imagens de EEPROM "originais". A regravação usa um
+arquivo que você fornece: o backup que o próprio EcoReset salva, a leitura
+salva na aba EEPROM ou um dump binário (informando o endereço inicial).
+
+Proteções:
+
+- só grava o que é diferente do que está na impressora, e mostra a lista antes;
+- número de série e MAC ficam protegidos, a menos que você libere (use só com
+  backup da mesma impressora);
+- avisa se o arquivo é de outro modelo;
+- salva os valores atuais antes de gravar e confere cada endereço depois.
+
 ## Modelos
 
 L3150 (L3151, L3160, L3166, L3168), L4160 (L4150 a L4168), L355, L365, L366,
@@ -62,6 +96,10 @@ nele e escolha **Abrir**.
 Linha de comando (qualquer sistema com Python 3.8+):
 
 ```
+python -m ecoreset diagnose usb        # erros da Epson, com correção
+python -m ecoreset code 1300           # explica um código
+python -m ecoreset canon-status Canon_G2060_series_2
+python -m ecoreset write-image usb backup.json
 python -m ecoreset levels usb          # pelo cabo USB
 python -m ecoreset reset usb
 python -m ecoreset detect 192.168.0.50
