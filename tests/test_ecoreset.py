@@ -420,6 +420,67 @@ class TestSnapshot(unittest.TestCase):
             self.assertEqual(load_image(path), ({48: 5}, "ET-2812"))
 
 
+class TestKeyFinder(unittest.TestCase):
+    def make(self, read_key, write_key=b"Maribaya"):
+        self.fake = FakePrinter(name="EPSON L9999 Series", read_key=read_key,
+                                write_key=write_key, eeprom={0: 0x41, 1: 0x42})
+        self.addCleanup(self.fake.close)
+        return EpsonPrinter("127.0.0.1", port=self.fake.port, timeout=0.5, retries=0)
+
+    def test_known_key_found_first(self):
+        from ecoreset import keyfinder
+        p = self.make((74, 54))
+        result = keyfinder.find_read_key(p)
+        self.assertEqual(result["read_key"], (74, 54))
+        self.assertTrue(result["conhecida"] and result["confirmada"])
+        self.assertFalse(result["aceita_qualquer"])
+        self.assertLessEqual(result["tentativas"], len(keyfinder.known_read_keys()))
+
+    def test_new_key_found_by_search(self):
+        from ecoreset import keyfinder
+        p = self.make((200, 3))
+        seen = []
+        result = keyfinder.find_read_key(p, progress=lambda i, n, k: seen.append(i))
+        self.assertEqual(result["read_key"], (200, 3))
+        self.assertFalse(result["conhecida"])
+        self.assertEqual(seen[-1], result["tentativas"])
+        self.assertEqual(p.read_key, (200, 3))
+
+    def test_cancel_restores_original_key(self):
+        import threading
+        from ecoreset import keyfinder
+        p = self.make((0, 200))
+        cancel = threading.Event()
+
+        def progress(i, n, key):
+            if i == 50:
+                cancel.set()
+        self.assertIsNone(keyfinder.find_read_key(p, progress=progress, cancel=cancel))
+        self.assertIsNone(p.read_key)
+
+    def test_printer_that_accepts_any_key_is_flagged(self):
+        from ecoreset import keyfinder
+        p = self.make((1, 1))
+        self.fake.any_key = True
+        self.assertTrue(keyfinder.find_read_key(p)["aceita_qualquer"])
+
+    def test_write_key_from_known_list_without_changing_value(self):
+        from ecoreset import keyfinder
+        p = self.make((200, 3), write_key=b"Arantifo")
+        p.read_key = (200, 3)
+        self.assertEqual(keyfinder.find_write_key(p), b"Arantifo")
+        self.assertEqual(self.fake.eeprom[0], 0x41)
+        unknown = self.make((200, 3), write_key=b"Novachav")
+        unknown.read_key = (200, 3)
+        self.assertIsNone(keyfinder.find_write_key(unknown))
+
+    def test_candidates_cover_every_key_once(self):
+        from ecoreset import keyfinder
+        keys = list(keyfinder.candidate_keys())
+        self.assertEqual(len(keys), 65536)
+        self.assertEqual(len(set(keys)), 65536)
+
+
 class TestWindowsUsb(unittest.TestCase):
     def test_parse_device_id(self):
         from ecoreset.winusb import parse_device_id

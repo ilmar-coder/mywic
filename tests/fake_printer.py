@@ -35,6 +35,7 @@ class FakePrinter:
         self.eeprom = dict(eeprom or {})
         self.locked = locked
         self.serial = "X5NY012345"
+        self.any_key = False  # firmware que não confere a chave de leitura
         self.temp_resets = 0
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("127.0.0.1", 0))
@@ -75,7 +76,7 @@ class FakePrinter:
             return snmp.OCTET_STRING, b"rw:01:OK;\x0c" if ok else b"rw:01:NA;\x0c"
         if cmd != b"||":
             return snmp.OCTET_STRING, cmd + b":NA;\x0c"
-        if payload[:2] != self.read_key or (self.locked == "all"):
+        if (payload[:2] != self.read_key and not self.any_key) or self.locked == "all":
             return snmp.OCTET_STRING, b"@BDC PS\r\nee:NA;\x0c"
         address = payload[5] | (payload[6] << 8)
         if payload[2] == 0x41:  # leitura

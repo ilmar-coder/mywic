@@ -6,7 +6,7 @@ import json
 import re
 import sys
 
-from . import canon, ipp, maintenance, snapshot
+from . import canon, ipp, keyfinder, maintenance, snapshot
 from .errors import explain_epson_error, search
 from .ivec import MAINTENANCE, CanonUsb, IvecError
 from .models import MODELS, model_names
@@ -72,6 +72,11 @@ def main(argv=None):
     sn.add_argument("--end", type=lambda s: int(s, 0), default=snapshot.DEFAULT_RANGE[1])
     sn.add_argument("--label", default="")
     sn.add_argument("--key", help="chave de leitura para modelo fora da lista, ex.: 74,54")
+    fk = sub.add_parser("find-key", help="descobre a chave de leitura (só lê)")
+    fk.add_argument("host")
+    fk.add_argument("--write", action="store_true",
+                    help="testa também as chaves de gravação conhecidas (grava o mesmo "
+                         "valor de volta, não muda nada)")
     cp = sub.add_parser("compare", help="compara duas leituras (antes e depois)")
     cp.add_argument("before")
     cp.add_argument("after")
@@ -137,6 +142,9 @@ def main(argv=None):
             print("Impressora %s liberada. Desligue e ligue de novo." % serial)
             return 0
 
+        if args.cmd == "find-key":
+            return _find_key(args)
+
         p = _printer(args)
         try:
             return _run(args, p)
@@ -146,6 +154,37 @@ def main(argv=None):
             ValueError) as e:
         print("Erro: %s" % e, file=sys.stderr)
         return 2
+
+
+def _find_key(args):
+    p = _connect(args)
+    try:
+        text, name = p.detect()
+        print("Impressora: %s" % (text or "?"))
+        if name:
+            print("Este modelo já está na lista (%s), chave %s." % (name, p.read_key))
+            return 0
+
+        def progress(i, n, key):
+            if i % 1024 == 0:
+                print("  %d/%d (testando %d,%d)" % (i, n, key[0], key[1]), file=sys.stderr)
+        try:
+            result = keyfinder.find_read_key(p, progress=progress)
+        except KeyboardInterrupt:
+            print("Busca interrompida.")
+            return 1
+        key = result["read_key"]
+        print("Chave de leitura: %d,%d (%d tentativas)" % (key[0], key[1],
+                                                         result["tentativas"]))
+        if result["aceita_qualquer"]:
+            print("Atenção: a impressora também aceitou outra chave.")
+        if args.write:
+            wk = keyfinder.find_write_key(p)
+            print("Chave de gravação: %s" % (wk.decode() if wk else
+                                             "nenhuma das conhecidas foi aceita"))
+        return 0
+    finally:
+        getattr(p.snmp, "close", lambda: None)()
 
 
 def _compare(args):

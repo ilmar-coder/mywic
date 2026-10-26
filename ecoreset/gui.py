@@ -7,7 +7,7 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from . import __version__, canon, ipp, maintenance, snapshot
+from . import __version__, canon, ipp, keyfinder, maintenance, snapshot
 from .errors import explain_epson_error, search
 from .models import MODELS, model_names
 from .printer import EpsonPrinter, PrinterError, load_image
@@ -208,6 +208,10 @@ class App(tk.Tk):
         ttk.Label(study, text="Chave de leitura (modelo fora da lista):").pack(side="left")
         self.manual_key = tk.StringVar()
         ttk.Entry(study, textvariable=self.manual_key, width=8).pack(side="left", padx=5)
+        self.find_key_text = tk.StringVar(value="Descobrir chave…")
+        ttk.Button(study, textvariable=self.find_key_text, command=self.find_key).pack(
+            side="left")
+        self.cancel_search = None
         self.ee_out = tk.Text(f, height=12, width=60, font=("Consolas", 10))
         self.ee_out.grid(row=3, column=0, columnspan=6, sticky="nsew")
         f.rowconfigure(3, weight=1)
@@ -241,6 +245,9 @@ class App(tk.Tk):
             while True:
                 done, result, error = self.results.get_nowait()
                 self.busy = False
+                self.progress = None
+                self.cancel_search = None
+                self.find_key_text.set("Descobrir chave…")
                 if error:
                     self.status.set("Erro.")
                     messagebox.showerror("EcoReset", str(error))
@@ -250,8 +257,7 @@ class App(tk.Tk):
         except queue.Empty:
             pass
         if self.busy and self.progress:
-            i, n = self.progress
-            self.status.set("Lendo EEPROM… %d de %d" % (i, n))
+            self.status.set(self.progress)
         self.after(100, self._poll)
 
     def _manual_key(self):
@@ -289,7 +295,7 @@ class App(tk.Tk):
             return
 
         def progress(i, n):
-            self.progress = (i, n)
+            self.progress = "Lendo EEPROM… %d de %d" % (i, n)
 
         def take(p):
             snap = snapshot.take(p, 0, end, label=label, progress=progress)
@@ -309,6 +315,72 @@ class App(tk.Tk):
                                    len(snap["sem_leitura"]), snap["model_name"] or "?",
                                    snap["serial"] or "?"))
         self.run("Lendo EEPROM", work, done)
+
+    def find_key(self):
+        if self.cancel_search is not None:  # o botão vira "Parar" durante a busca
+            self.cancel_search.set()
+            return
+        if self.busy:
+            return
+        if not messagebox.askyesno("EcoReset", (
+                "Procurar a chave de leitura desta Epson?\n\nSó faz leituras, não grava "
+                "nada. As chaves conhecidas vão primeiro; se não for nenhuma, testa "
+                "todas as 65.536 combinações, o que pode levar de minutos a mais de "
+                "uma hora. Dá para parar a qualquer momento.")):
+            return
+        cancel = threading.Event()
+
+        def progress(i, n, key):
+            self.progress = "Procurando chave… %d de %d (testando %d,%d)" % (
+                i, n, key[0], key[1])
+
+        def search(p):
+            if p.model:
+                raise PrinterError("este modelo (%s) já está na lista e tem chave "
+                                   "conhecida" % p.model)
+            return keyfinder.find_read_key(p, progress=progress, cancel=cancel)
+        work = self.guarded(lambda: self.session(search))
+        if not work:
+            return
+        self.cancel_search = cancel
+        self.find_key_text.set("Parar busca")
+        self.run("Procurando chave", work, self._key_found)
+
+    def _key_found(self, result):
+        out = self.ee_out
+        out.delete("1.0", "end")
+        if result is None:
+            return out.insert("end", "Busca interrompida.\n")
+        key = result["read_key"]
+        self.manual_key.set("%d,%d" % key)
+        out.insert("end", "Chave de leitura encontrada: %d,%d (em %d tentativas)\n"
+                   % (key[0], key[1], result["tentativas"]))
+        if result["conhecida"]:
+            out.insert("end", "É a chave de um modelo já conhecido: provavelmente da "
+                       "mesma família.\n")
+        if result["aceita_qualquer"]:
+            out.insert("end", "Atenção: a impressora aceitou também outra chave. Ela "
+                       "parece não conferir a chave de leitura.\n")
+        elif not result["confirmada"]:
+            out.insert("end", "Atenção: a chave não se confirmou num segundo endereço.\n")
+        out.insert("end", "A chave já foi preenchida no campo ao lado. Agora dá para "
+                   "fazer a Leitura completa.\n")
+        if not messagebox.askyesno("EcoReset", (
+                "Chave de leitura encontrada: %d,%d.\n\nTestar também as chaves de "
+                "GRAVAÇÃO conhecidas? Isso grava no endereço 0 o mesmo valor que já está "
+                "lá, então não muda nada na impressora.") % key):
+            return
+        work = self.guarded(lambda: self.session(keyfinder.find_write_key))
+        if work:
+            self.run("Testando chaves de gravação", work, self._write_key_found)
+
+    def _write_key_found(self, key):
+        if key:
+            self.ee_out.insert("end", "Chave de gravação aceita: %s (de um modelo "
+                               "conhecido).\n" % key.decode())
+        else:
+            self.ee_out.insert("end", "Nenhuma chave de gravação conhecida foi aceita. "
+                               "Este modelo usa uma chave nova.\n")
 
     def snapshot_compare(self):
         first = filedialog.askopenfilename(title="Leitura de ANTES",

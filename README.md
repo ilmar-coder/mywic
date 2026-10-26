@@ -59,6 +59,28 @@ Proteções:
 - avisa se o arquivo é de outro modelo;
 - salva os valores atuais antes de gravar e confere cada endereço depois.
 
+## Descobrir a chave de um modelo fora da lista
+
+Na aba EEPROM, **Descobrir chave…** procura a chave de leitura da Epson
+conectada. É **só leitura**: a chave errada só recebe "NA" da impressora.
+
+- **Ordem da busca:** primeiro as chaves dos modelos conhecidos, depois as
+  combinações em que caem quase todas as chaves conhecidas, e por fim as 65.536.
+  O botão vira **Parar busca** enquanto roda.
+- **Quanto demora:** de segundos (chave de família conhecida) a mais de uma hora
+  (busca completa), conforme a conexão.
+- **Depois de achar:** a chave é preenchida no campo ao lado, pronta para a
+  **Leitura completa**. O programa também oferece testar as **chaves de
+  gravação conhecidas**, gravando no endereço 0 o mesmo valor que já está lá (não
+  muda nada). Uma chave de gravação nova (8 bytes) não dá para descobrir por
+  tentativa.
+- **Pela rede, num firmware bloqueado** (como o da L3250), nenhuma chave
+  funciona. Use o cabo USB.
+
+```
+python -m ecoreset find-key usb --write
+```
+
 ## Descobrir o reset de um modelo novo (leitura completa e comparação)
 
 Para modelos que ainda não estão na lista, dá para descobrir quais endereços o
