@@ -3,14 +3,13 @@
 import datetime
 import json
 import queue
-import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from . import __version__, canon, ipp, maintenance
+from . import __version__, canon, ipp, maintenance, snapshot
 from .errors import explain_epson_error, search
-from .models import model_names
+from .models import MODELS, model_names
 from .printer import EpsonPrinter, PrinterError, load_image
 from .d4 import D4Error
 from .ivec import MAINTENANCE, CanonUsb, IvecError
@@ -19,8 +18,8 @@ from .usb import UsbCtrlClient, UsbError
 
 ERRORS = (PrinterError, SnmpError, UsbError, D4Error, ipp.IppError, IvecError, OSError,
           ValueError)
-# No Windows o USB ainda não tem acesso à EEPROM (precisa do USBPRINT).
-USB_SUPPORTED = sys.platform != "win32"
+# Mac/Linux pelo libusb; Windows pelo usbprint.sys (winusb.py).
+USB_SUPPORTED = True
 
 
 class App(tk.Tk):
@@ -30,6 +29,7 @@ class App(tk.Tk):
         self.minsize(560, 460)
         self.results = queue.Queue()
         self.busy = False
+        self.progress = None
         self._build()
         self.after(100, self._poll)
 
@@ -199,13 +199,24 @@ class App(tk.Tk):
         ttk.Button(buttons, text="Salvar leitura…", command=self.ee_save).pack(side="left")
         ttk.Button(buttons, text="Regravar de arquivo…", command=self.ee_image).pack(
             side="left", padx=10)
+        study = ttk.Frame(f)
+        study.grid(row=2, column=0, columnspan=6, pady=(0, 8), sticky="w")
+        ttk.Button(study, text="Leitura completa…", command=self.snapshot_take).pack(
+            side="left")
+        ttk.Button(study, text="Comparar leituras…", command=self.snapshot_compare).pack(
+            side="left", padx=10)
+        ttk.Label(study, text="Chave de leitura (modelo fora da lista):").pack(side="left")
+        self.manual_key = tk.StringVar()
+        ttk.Entry(study, textvariable=self.manual_key, width=8).pack(side="left", padx=5)
         self.ee_out = tk.Text(f, height=12, width=60, font=("Consolas", 10))
-        self.ee_out.grid(row=2, column=0, columnspan=6, sticky="nsew")
-        f.rowconfigure(2, weight=1)
+        self.ee_out.grid(row=3, column=0, columnspan=6, sticky="nsew")
+        f.rowconfigure(3, weight=1)
         f.columnconfigure(5, weight=1)
-        ttk.Label(f, foreground="#a00", text=(
-            "Avançado: gravar endereços errados pode travar a impressora.")).grid(
-            row=3, column=0, columnspan=6, sticky="w", pady=(5, 0))
+        ttk.Label(f, foreground="#a00", wraplength=620, text=(
+            "Avançado: gravar endereços errados pode travar a impressora. Para "
+            "descobrir o reset de um modelo novo: faça uma leitura completa, zere a "
+            "impressora com outra ferramenta, faça outra leitura e compare.")).grid(
+            row=4, column=0, columnspan=6, sticky="w", pady=(5, 0))
         self.last_dump = {}
         return f
 
@@ -238,7 +249,105 @@ class App(tk.Tk):
                     done(result)
         except queue.Empty:
             pass
+        if self.busy and self.progress:
+            i, n = self.progress
+            self.status.set("Lendo EEPROM… %d de %d" % (i, n))
         self.after(100, self._poll)
+
+    def _manual_key(self):
+        text = self.manual_key.get().strip()
+        if not text:
+            return None
+        parts = [p for p in text.replace(";", ",").replace(" ", ",").split(",") if p]
+        try:
+            key = tuple(int(p, 0) for p in parts)
+        except ValueError:
+            key = ()
+        if len(key) != 2 or not all(0 <= k <= 255 for k in key):
+            raise ValueError("chave de leitura inválida: use dois números, ex.: 74,54")
+        return key
+
+    # ---- leitura completa e comparação --------------------------------------
+
+    def snapshot_take(self):
+        label = simpledialog.askstring(
+            "EcoReset", "Nome desta leitura (ex.: antes do reset):", parent=self,
+            initialvalue="antes")
+        if label is None:
+            return
+        end = simpledialog.askinteger(
+            "EcoReset", "Ler do endereço 0 até (2047 cobre os modelos conhecidos):",
+            initialvalue=snapshot.DEFAULT_RANGE[1], minvalue=0, maxvalue=0xFFFF, parent=self)
+        if end is None:
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".json", filetypes=[("Leitura", "*.json")],
+            initialfile="leitura-%s-%s.json" % (
+                label.replace(" ", "-") or "eeprom",
+                datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
+        if not path:
+            return
+
+        def progress(i, n):
+            self.progress = (i, n)
+
+        def take(p):
+            snap = snapshot.take(p, 0, end, label=label, progress=progress)
+            snapshot.save(snap, path)
+            return snap
+        work = self.guarded(lambda: self.session(take))
+        if not work:
+            return
+        self.progress = None
+
+        def done(snap):
+            self.progress = None
+            self.ee_out.delete("1.0", "end")
+            self.ee_out.insert("end", "Leitura '%s' salva em %s\n%d endereços lidos, %d "
+                               "recusados.\nModelo: %s  Série: %s\n" % (
+                                   label, path, len(snap["eeprom"]),
+                                   len(snap["sem_leitura"]), snap["model_name"] or "?",
+                                   snap["serial"] or "?"))
+        self.run("Lendo EEPROM", work, done)
+
+    def snapshot_compare(self):
+        first = filedialog.askopenfilename(title="Leitura de ANTES",
+                                           filetypes=[("Leitura", "*.json")])
+        if not first:
+            return
+        second = filedialog.askopenfilename(title="Leitura de DEPOIS",
+                                            filetypes=[("Leitura", "*.json")])
+        if not second:
+            return
+        loaded = self.guarded(lambda: (snapshot.load(first), snapshot.load(second)))
+        if not loaded:
+            return
+        before, after = loaded
+        result = snapshot.compare(before, after)
+        changes = result["mudancas"]
+        out = self.ee_out
+        out.delete("1.0", "end")
+        for w in result["avisos"]:
+            out.insert("end", "Atenção: %s\n" % w)
+        out.insert("end", "%d endereço(s) mudaram entre '%s' e '%s':\n" % (
+            len(changes), before.get("label", "antes"), after.get("label", "depois")))
+        for a, old, new in changes:
+            out.insert("end", "%5d (0x%04X): %3d -> %3d   %s\n" % (
+                a, a, old, new, snapshot.classify(a, old, new)))
+        if not changes:
+            return
+        model = MODELS.get(after.get("model") or "", {})
+        suggestion = snapshot.suggest_model(before, after, changes,
+                                            model.get("serial_number", ()))
+        out.insert("end", "\nReset sugerido (%d endereços): %s\n" % (
+            len(suggestion["raw_waste_reset"]), suggestion["raw_waste_reset"]))
+        if messagebox.askyesno("EcoReset", "Salvar a sugestão de modelo em arquivo? "
+                               "(Mande para incluirmos o modelo no app.)"):
+            path = filedialog.asksaveasfilename(defaultextension=".json",
+                                                initialfile="modelo-sugerido.json")
+            if path:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(suggestion, f, indent=2, ensure_ascii=False)
 
     def where(self):
         return "USB" if self.conn.get() == "usb" else self.host.get().strip()
@@ -254,12 +363,15 @@ class App(tk.Tk):
                                "Diagnóstico e Manutenção.")
         if conn == "rede" and not host:
             raise PrinterError("digite o IP da impressora")
+        key = self._manual_key()
 
         def prepare(p):
             if model:
                 p.set_model(model)
             else:
                 p.detect()
+            if key and not p.model:  # modelo fora da lista: só a leitura funciona
+                p.read_key = key
             return fn(p)
 
         def work():

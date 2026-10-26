@@ -357,6 +357,112 @@ class TestIvec(unittest.TestCase):
         canon_usb.device = None
 
 
+class TestSnapshot(unittest.TestCase):
+    def setUp(self):
+        self.fake = FakePrinter(name="EPSON L3210 Series", read_key=(74, 54),
+                                eeprom={47: 0, 48: 151, 49: 13, 54: 30, 90: 7, 1604: 88})
+
+    def tearDown(self):
+        self.fake.close()
+
+    def printer(self):
+        p = EpsonPrinter("127.0.0.1", port=self.fake.port, timeout=0.5, retries=0)
+        self.assertEqual(p.detect()[1], None)  # L3210 não está na lista
+        p.read_key = (74, 54)  # chave informada à mão
+        return p
+
+    def test_take_compare_and_suggest(self):
+        from ecoreset import snapshot
+        p = self.printer()
+        with tempfile.TemporaryDirectory() as d:
+            before = snapshot.take(p, 0, 120, label="antes")
+            snapshot.save(before, os.path.join(d, "a.json"))
+            # "outra ferramenta" faz o reset
+            self.fake.eeprom.update({48: 0, 49: 0, 54: 94, 90: 8})
+            after = snapshot.take(p, 0, 120, label="depois")
+            snapshot.save(after, os.path.join(d, "b.json"))
+            before = snapshot.load(os.path.join(d, "a.json"))
+            after = snapshot.load(os.path.join(d, "b.json"))
+        self.assertEqual(before["serial"], "X5NY012345")
+        self.assertEqual(len(before["eeprom"]), 121)
+        result = snapshot.compare(before, after)
+        self.assertEqual(result["avisos"], [])
+        self.assertEqual(result["mudancas"], [(48, 151, 0), (49, 13, 0), (54, 30, 94),
+                                              (90, 7, 8)])
+        self.assertEqual(snapshot.classify(48, 151, 0), "provável contador zerado")
+        self.assertIn("94", snapshot.classify(54, 30, 94))
+        s = snapshot.suggest_model(before, after, result["mudancas"])
+        self.assertEqual(s["raw_waste_reset"], {"48": 0, "49": 0, "54": 94})
+        self.assertEqual(s["ignorados"], [90])
+        self.assertEqual(s["read_key"], [74, 54])
+
+    def test_wrong_key_stops_early(self):
+        from ecoreset import snapshot
+        p = self.printer()
+        p.read_key = (1, 2)
+        with self.assertRaisesRegex(PrinterError, "16 primeiros"):
+            snapshot.take(p, 0, 2047)
+
+    def test_compare_warns_on_different_printers(self):
+        from ecoreset import snapshot
+        a = {"serial": "AAA", "eeprom": {"1": 1}}
+        b = {"serial": "BBB", "eeprom": {"1": 2, "2": 3}}
+        result = snapshot.compare(a, b)
+        self.assertEqual(len(result["avisos"]), 2)
+        self.assertEqual(result["mudancas"], [(1, 1, 2)])
+
+    def test_snapshot_file_is_a_valid_restore_image(self):
+        from ecoreset import snapshot
+        from ecoreset.printer import load_image
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "s.json")
+            snapshot.save({"model": "ET-2812", "eeprom": {"48": 5}}, path)
+            self.assertEqual(load_image(path), ({48: 5}, "ET-2812"))
+
+
+class TestWindowsUsb(unittest.TestCase):
+    def test_parse_device_id(self):
+        from ecoreset.winusb import parse_device_id
+        text = b"MFG:EPSON;CMD:ESCPL2,BDC,D4;MDL:L3250 Series;CLS:PRINTER;"
+        info = parse_device_id(len(text).to_bytes(2, "big") + text)
+        self.assertEqual(info["MFG"], "EPSON")
+        self.assertEqual(info["MDL"], "L3250 Series")
+        long_names = b"MANUFACTURER:Canon;COMMAND SET:IVEC;MODEL:G2060 series;"
+        info = parse_device_id((len(long_names) + 2).to_bytes(2, "big") + long_names)
+        self.assertEqual((info["MFG"], info["MDL"], info["CMD"]),
+                         ("Canon", "G2060 series", "IVEC"))
+
+    def test_windows_path_opens_epson_over_d4(self):
+        """Simula o Windows: usbprint.sys com uma Canon e uma Epson ligadas."""
+        from unittest import mock
+        from ecoreset import usb, winusb
+        fake = FakePrinter(name="EPSON L3250 Series", read_key=(74, 54),
+                           eeprom={48: 151, 49: 13})
+        fake.close()
+
+        class FakeUsbPrint(FakeD4Device):
+            def __init__(self, path):
+                super().__init__(fake, silent=(path == "canon"))
+                self.ids = {"canon": {"MFG": "Canon", "MDL": "G2060 series"},
+                            "epson": {"MFG": "EPSON", "MDL": "L3250 Series"}}[path]
+                self.closed = False
+
+            def device_id(self):
+                return self.ids
+
+            def close(self):
+                self.closed = True
+
+        with mock.patch.object(usb.sys, "platform", "win32"), \
+                mock.patch.object(winusb, "device_paths", lambda: ["canon", "epson"]), \
+                mock.patch.object(winusb, "UsbPrintDevice", FakeUsbPrint):
+            client = usb.UsbCtrlClient().open()
+            p = EpsonPrinter("USB", client=client)
+            self.assertEqual(p.detect(), ("L3250 Series", "ET-2812"))
+            self.assertEqual(p.read_eeprom(49), 13)
+            client.close()
+
+
 class TestEepromImage(unittest.TestCase):
     def setUp(self):
         self.fake = FakePrinter(name="EPSON L3250 Series", read_key=(74, 54),

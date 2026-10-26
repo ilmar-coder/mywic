@@ -2,7 +2,8 @@
 
 UsbCtrlClient tem o mesmo get(oid) do SnmpClient, então EpsonPrinter funciona
 igual pelo cabo: os quadros EPSON-CTRL que iriam dentro do OID vão pelo canal
-D4. Funciona no Mac e no Linux (precisa do libusb: brew install libusb).
+D4. No Mac/Linux usa o libusb (brew install libusb); no Windows, o
+usbprint.sys que o próprio Windows instala (veja winusb.py).
 """
 
 import ctypes
@@ -10,6 +11,7 @@ import ctypes.util
 import os
 import sys
 
+from . import winusb
 from .d4 import D4Error, EpsonCtrlChannel
 
 EPSON_VENDOR = 0x04B8
@@ -206,6 +208,18 @@ def find_devices(vendor):
 
 def list_usb_printers():
     """[(product, serial)] das Epson ligadas no USB."""
+    if sys.platform == "win32":
+        result = []
+        for path in winusb.device_paths():
+            try:
+                device = winusb.UsbPrintDevice(path)
+                info = device.device_id()
+                device.close()
+            except OSError:
+                continue
+            if info.get("MFG", "").upper() == "EPSON":
+                result.append((info.get("MDL", "Epson"), info.get("SN", "")))
+        return result
     lib, ctx, devices, found = _epson_devices()
     result = []
     try:
@@ -232,6 +246,8 @@ class UsbCtrlClient:
         self.device = self.channel = None
 
     def open(self):
+        if sys.platform == "win32":
+            return self._open_windows()
         self.lib, self.ctx, self.devices, found = _epson_devices()
         try:
             for dev, desc in found:
@@ -249,6 +265,32 @@ class UsbCtrlClient:
         self.close()
         raise UsbError("nenhuma Epson respondeu pelo USB (está ligada e com o cabo "
                        "conectado?)")
+
+    def _open_windows(self):
+        """No Windows: usbprint.sys, o driver que já vem com a impressora."""
+        for path in winusb.device_paths():
+            try:
+                device = winusb.UsbPrintDevice(path)
+            except OSError:
+                continue
+            try:
+                info = device.device_id()
+            except OSError:
+                info = {}
+            if info and info.get("MFG", "").upper() != "EPSON":
+                device.close()
+                continue
+            device.product = info.get("MDL", "Epson")
+            channel = EpsonCtrlChannel(device)
+            try:
+                if channel.open():
+                    self.device, self.channel = device, channel
+                    return self
+            except (OSError, D4Error):
+                channel.close()
+            device.close()
+        raise UsbError("nenhuma Epson respondeu pelo USB. Confira se está ligada e "
+                       "feche o monitor de status da Epson, que pode ocupar a porta.")
 
     def _open_ctrl(self, device):
         """Tenta cada interface até uma responder ao D4."""

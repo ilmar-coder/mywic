@@ -10,9 +10,11 @@ O status vem em resposta a GetStatus: <ivec:status>, <ivec:status_detail> e
 
 import datetime
 import re
+import sys
 import time
 import uuid
 
+from . import winusb
 from .errors import explain_canon
 from .usb import UsbDevice, UsbError, find_devices, interface_list
 
@@ -123,6 +125,19 @@ class CanonUsb:
         self.device = None
 
     def open(self):
+        if sys.platform == "win32":  # usbprint.sys, sem libusb
+            for path in winusb.device_paths():
+                try:
+                    device = winusb.UsbPrintDevice(path)
+                    info = device.device_id()
+                except OSError:
+                    continue
+                if info.get("MFG", "").upper() == "CANON" and "IVEC" in info.get("CMD", ""):
+                    device.product = info.get("MDL", "Canon")
+                    self.device = device
+                    return self
+                device.close()
+            raise IvecError("nenhuma Canon IVEC no USB (está ligada?)")
         self.lib, self.ctx, self.devices, found = find_devices(CANON_VENDOR)
         try:
             for dev, desc in found:

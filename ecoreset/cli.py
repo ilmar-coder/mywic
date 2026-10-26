@@ -2,13 +2,14 @@
 
 import argparse
 import datetime
+import json
 import re
 import sys
 
-from . import canon, ipp, maintenance
+from . import canon, ipp, maintenance, snapshot
 from .errors import explain_epson_error, search
 from .ivec import MAINTENANCE, CanonUsb, IvecError
-from .models import model_names
+from .models import MODELS, model_names
 from .printer import EpsonPrinter, PrinterError, load_image
 from .snmp import SnmpError
 from .usb import UsbCtrlClient, UsbError
@@ -28,10 +29,13 @@ def _printer(args):
     else:
         text, name = p.detect()
         print("Impressora: %s" % (text or "?"))
-        if not name:
+        key = getattr(args, "key", None)
+        if not name and key:  # modelo fora da lista: só leitura, com a chave dada
+            p.read_key = tuple(int(k, 0) for k in key.split(","))
+        elif not name:
             raise PrinterError("modelo não suportado; use --model (%s)"
                                % ", ".join(model_names()))
-    print("Modelo: %s" % p.model)
+    print("Modelo: %s" % (p.model or "fora da lista (chave %s)" % (p.read_key,)))
     return p
 
 
@@ -62,6 +66,16 @@ def main(argv=None):
     cm = sub.add_parser("canon-maint", help="manutenção da Canon pelo USB (IVEC)")
     cm.add_argument("operation", choices=list(MAINTENANCE))
     sub.add_parser("code", help="explica um código de erro").add_argument("code")
+    sn = sub.add_parser("snapshot", help="leitura completa da EEPROM salva em arquivo")
+    sn.add_argument("host")
+    sn.add_argument("-o", "--output", required=True, help="arquivo .json de saída")
+    sn.add_argument("--end", type=lambda s: int(s, 0), default=snapshot.DEFAULT_RANGE[1])
+    sn.add_argument("--label", default="")
+    sn.add_argument("--key", help="chave de leitura para modelo fora da lista, ex.: 74,54")
+    cp = sub.add_parser("compare", help="compara duas leituras (antes e depois)")
+    cp.add_argument("before")
+    cp.add_argument("after")
+    cp.add_argument("--save", help="salva a sugestão de modelo neste .json")
     wi = sub.add_parser("write-image", help="regrava a EEPROM a partir de um arquivo")
     wi.add_argument("host")
     wi.add_argument("file", help=".json do EcoReset ou dump binário")
@@ -71,6 +85,9 @@ def main(argv=None):
                     help="grava também série/MAC (só para backup da mesma impressora)")
     wi.add_argument("--yes", action="store_true")
     args = ap.parse_args(argv)
+
+    if args.cmd == "compare":
+        return _compare(args)
 
     if args.cmd == "code":
         found = ([explain_epson_error(int(args.code, 16))]
@@ -131,6 +148,28 @@ def main(argv=None):
         return 2
 
 
+def _compare(args):
+    before, after = snapshot.load(args.before), snapshot.load(args.after)
+    result = snapshot.compare(before, after)
+    for w in result["avisos"]:
+        print("Atenção: %s" % w)
+    changes = result["mudancas"]
+    print("%d endereço(s) mudaram:" % len(changes))
+    for a, old, new in changes:
+        print("%5d (0x%04X): %3d -> %3d   %s" % (a, a, old, new,
+                                             snapshot.classify(a, old, new)))
+    if changes:
+        model = MODELS.get(after.get("model") or "", {})
+        suggestion = snapshot.suggest_model(before, after, changes,
+                                            model.get("serial_number", ()))
+        print("\nReset sugerido: %s" % suggestion["raw_waste_reset"])
+        if args.save:
+            with open(args.save, "w", encoding="utf-8") as f:
+                json.dump(suggestion, f, indent=2, ensure_ascii=False)
+            print("Sugestão salva em %s" % args.save)
+    return 0
+
+
 def _print_problem(p):
     print("\n%s %s: %s" % (p.brand, p.code, p.title))
     print("  Causa: %s" % p.cause)
@@ -140,7 +179,15 @@ def _print_problem(p):
 
 
 def _run(args, p):
-    if args.cmd == "diagnose":
+    if args.cmd == "snapshot":
+        def progress(i, n):
+            if i % 128 == 0 or i == n:
+                print("  %d/%d" % (i, n), file=sys.stderr)
+        snap = snapshot.take(p, 0, args.end, label=args.label, progress=progress)
+        snapshot.save(snap, args.output)
+        print("Leitura salva em %s: %d endereços lidos, %d recusados."
+              % (args.output, len(snap["eeprom"]), len(snap["sem_leitura"])))
+    elif args.cmd == "diagnose":
         d = p.diagnose()
         print("Estado: %s" % d["estado"])
         for a in d["avisos"]:
