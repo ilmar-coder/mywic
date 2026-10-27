@@ -7,7 +7,8 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from . import __version__, canon, ipp, keyfinder, library, maintenance, snapshot, wiclog
+from . import (__version__, canon, ipp, keyfinder, library, maintenance, server, snapshot,
+               wiclog)
 from .errors import explain_epson_error, search
 from .models import MODELS, model_names, reload_learned
 from .printer import EpsonPrinter, PrinterError, load_image
@@ -16,7 +17,7 @@ from .ivec import MAINTENANCE, CanonUsb, IvecError
 from .snmp import SnmpError
 from .usb import UsbCtrlClient, UsbError
 
-ERRORS = (wiclog.WicLogError, PrinterError, SnmpError, UsbError, D4Error, ipp.IppError, IvecError, OSError,
+ERRORS = (wiclog.WicLogError, server.ServerError, PrinterError, SnmpError, UsbError, D4Error, ipp.IppError, IvecError, OSError,
           ValueError)
 # Mac/Linux pelo libusb; Windows pelo usbprint.sys (winusb.py).
 USB_SUPPORTED = True
@@ -229,47 +230,96 @@ class App(tk.Tk):
     def _tab_library(self, parent):
         f = ttk.Frame(parent, padding=10)
         self.lib_folder = tk.StringVar()
-        ttk.Label(f, text="Banco:").grid(row=0, column=0, sticky="w")
-        ttk.Label(f, textvariable=self.lib_folder, foreground="#555").grid(
+        self.lib_server = tk.StringVar()
+        ttk.Label(f, text="Servidor:").grid(row=0, column=0, sticky="w")
+        ttk.Label(f, textvariable=self.lib_server, foreground="#555").grid(
             row=0, column=1, sticky="w")
+        ttk.Label(f, text="Cópia local:").grid(row=1, column=0, sticky="w")
+        ttk.Label(f, textvariable=self.lib_folder, foreground="#555").grid(
+            row=1, column=1, sticky="w")
         buttons = ttk.Frame(f)
-        buttons.grid(row=1, column=0, columnspan=2, pady=8, sticky="w")
+        buttons.grid(row=2, column=0, columnspan=2, pady=8, sticky="w")
+        ttk.Button(buttons, text="Atualizar", command=self.sync_library).pack(side="left")
         ttk.Button(buttons, text="Importar log do WICReset…",
-                   command=self.import_wic_log).pack(side="left")
-        ttk.Button(buttons, text="Pasta compartilhada…", command=self.choose_folder).pack(
+                   command=self.import_wic_log).pack(side="left", padx=10)
+        ttk.Button(buttons, text="Apagar", command=self.remove_learned).pack(side="left")
+        ttk.Button(buttons, text="Servidor…", command=self.choose_server).pack(
             side="left", padx=10)
-        ttk.Button(buttons, text="Juntar banco de outra máquina…",
-                   command=self.merge_library).pack(side="left")
-        ttk.Button(buttons, text="Apagar", command=self.remove_learned).pack(
+        ttk.Button(buttons, text="Pasta…", command=self.choose_folder).pack(side="left")
+        ttk.Button(buttons, text="Juntar arquivo…", command=self.merge_library).pack(
             side="left", padx=10)
         self.lib_list = ttk.Treeview(f, columns=("chave", "maquina", "data"), height=8)
         for col, text, width in (("#0", "Modelo", 120), ("chave", "Chave de leitura", 110),
-                                 ("maquina", "Aprendido em", 150), ("data", "Data", 150)):
+                                 ("maquina", "Aprendido em", 150), ("data", "Data", 170)):
             self.lib_list.heading(col, text=text)
             self.lib_list.column(col, width=width)
-        self.lib_list.grid(row=2, column=0, columnspan=2, sticky="nsew")
-        f.rowconfigure(2, weight=1)
+        self.lib_list.grid(row=3, column=0, columnspan=2, sticky="nsew")
+        f.rowconfigure(3, weight=1)
         f.columnconfigure(1, weight=1)
         ttk.Label(f, foreground="#555", wraplength=620, text=(
             "Faça um reset (pode ser o trial gratuito) no WICReset e importe o "
             "application.log dele: o EcoReset aprende as chaves e o reset do modelo "
-            "e passa a zerar sozinho pelo cabo USB. Para usar o mesmo banco em vários "
-            "computadores, escolha como pasta compartilhada uma pasta do Google "
-            "Drive, OneDrive ou Dropbox.")).grid(row=3, column=0, columnspan=2,
-                                                 sticky="w", pady=(5, 0))
+            "e passa a zerar sozinho pelo cabo USB. Com o servidor configurado, o "
+            "modelo vai para o banco do servidor e as outras máquinas o recebem ao "
+            "clicar em Atualizar (o EcoReset também atualiza ao abrir).")).grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(5, 0))
         self.refresh_library()
+        if server.configured():
+            self.after(500, lambda: self.sync_library(quiet=True))
         return f
 
     def refresh_library(self):
         learned = self.guarded(reload_learned) or []
         self.lib_folder.set(library.db_path())
+        url, token = server.settings()
+        self.lib_server.set(url if token else "não configurado (clique em Servidor…)")
         self.model_box["values"] = model_names()
         self.lib_list.delete(*self.lib_list.get_children())
         for name in learned:
             cfg = MODELS[name]
             self.lib_list.insert("", "end", iid=name, text=name, values=(
                 "%d,%d" % cfg["read_key"], cfg.get("learned_on", ""),
-                cfg.get("learned_at", "")))
+                cfg.get("learned_at", "") + ("  (não enviado)" if cfg.get("pendente")
+                                             else "")))
+
+    def sync_library(self, quiet=False):
+        if not server.configured():
+            if not quiet:
+                self.choose_server()
+            return
+        if self.busy:
+            return
+
+        def done(result):
+            self.refresh_library()
+            sent, total, new = result
+            self.status.set("Banco atualizado: %d modelo(s) no servidor%s%s." % (
+                total, ", %d enviado(s)" % sent if sent else "",
+                ", novos: " + ", ".join(new) if new else ""))
+
+        if quiet:  # ao abrir: sem janela de erro se estiver sem internet
+            def work():
+                try:
+                    return server.sync()
+                except server.ServerError as e:
+                    return e
+            self.run("Atualizando o banco", work, lambda r: done(r) if isinstance(
+                r, tuple) else self.status.set("Banco não atualizado: %s" % r))
+        else:
+            self.run("Atualizando o banco", server.sync, done)
+
+    def choose_server(self):
+        url, _ = server.settings()
+        url = simpledialog.askstring("EcoReset", "Endereço do servidor:", initialvalue=url)
+        if not url:
+            return
+        token = simpledialog.askstring("EcoReset", "Chave do EcoReset no servidor:",
+                                       show="*")
+        if not token:
+            return
+        if self.guarded(lambda: server.configure(url, token) or True):
+            self.refresh_library()
+            self.sync_library()
 
     def import_wic_log(self):
         path = filedialog.askopenfilename(title="application.log do WICReset",
@@ -293,9 +343,14 @@ class App(tk.Tk):
                          "no lugar dele.")
         if not messagebox.askyesno("EcoReset", "\n".join(lines) + "\n\nSalvar no banco?"):
             return
-        if self.guarded(lambda: library.save(name, cfg)):
-            self.refresh_library()
-            self.model.set(name)
+        problem = self.guarded(lambda: server.publish(name, cfg) or "")
+        if problem is None:
+            return
+        self.refresh_library()
+        self.model.set(name)
+        if problem:
+            messagebox.showwarning("EcoReset", "Salvo nesta máquina, mas não foi ao "
+                                   "servidor: %s" % problem)
 
     def choose_folder(self):
         path = filedialog.askdirectory(title="Pasta do banco de modelos")
@@ -315,7 +370,7 @@ class App(tk.Tk):
     def remove_learned(self):
         for name in self.lib_list.selection():
             if messagebox.askyesno("EcoReset", "Apagar %s do banco?" % name):
-                self.guarded(lambda: library.remove(name))
+                self.guarded(lambda: server.remove(name))
         self.refresh_library()
 
     # ---- execução em segundo plano -------------------------------------------

@@ -2,11 +2,12 @@
 
 import argparse
 import datetime
+import getpass
 import json
 import re
 import sys
 
-from . import canon, ipp, keyfinder, library, maintenance, snapshot, wiclog
+from . import canon, ipp, keyfinder, library, maintenance, server, snapshot, wiclog
 from .errors import explain_epson_error, search
 from .ivec import MAINTENANCE, CanonUsb, IvecError
 from .models import MODELS, model_names, reload_learned
@@ -99,12 +100,17 @@ def main(argv=None):
     lb.add_argument("--folder", help="usa esta pasta (ex.: uma pasta do Google Drive)")
     lb.add_argument("--merge", help="junta outro modelos.json neste")
     lb.add_argument("--remove", help="apaga um modelo aprendido")
+    lb.add_argument("--server", nargs="?", const=server.DEFAULT_URL, metavar="URL",
+                    help="usa o banco do servidor (pede a chave); padrão %s"
+                         % server.DEFAULT_URL)
+    lb.add_argument("--sync", action="store_true",
+                    help="Atualizar: envia os pendentes e baixa o banco do servidor")
     args = ap.parse_args(argv)
 
     if args.cmd in ("wic-log", "library"):
         try:
             return _wic_log(args) if args.cmd == "wic-log" else _library(args)
-        except (wiclog.WicLogError, OSError, ValueError) as e:
+        except (wiclog.WicLogError, server.ServerError, OSError, ValueError) as e:
             print("Erro: %s" % e, file=sys.stderr)
             return 2
 
@@ -244,7 +250,11 @@ def _wic_log(args):
     for w in warnings:
         print("Atenção: %s" % w)
     if args.save:
-        print("Salvo no banco: %s" % library.save(name, cfg))
+        problem = server.publish(name, cfg)
+        print("Salvo no banco: %s" % library.db_path())
+        if server.configured():
+            print("Atenção: não foi ao servidor: %s" % problem if problem
+                  else "Enviado ao servidor.")
     else:
         print("(use --save para gravar no banco)")
     return 0
@@ -253,18 +263,28 @@ def _wic_log(args):
 def _library(args):
     if args.folder:
         print("Pasta do banco: %s" % library.set_folder(args.folder))
+    if args.server:
+        server.configure(args.server, getpass.getpass("Chave do EcoReset no servidor: "))
+        args.sync = True
+    if args.sync:
+        sent, total, new = server.sync()
+        print("Atualizado: %d enviado(s), %d no servidor, novos: %s"
+              % (sent, total, ", ".join(new) or "nenhum"))
     if args.merge:
         new = library.merge_file(args.merge)
         print("Juntado. Novos: %s" % (", ".join(new) or "nenhum"))
     if args.remove:
-        print("Apagado." if library.remove(args.remove) else "Não está no banco.")
+        print("Apagado." if server.remove(args.remove) else "Não está no banco.")
     learned = reload_learned()
     print("Banco: %s" % library.db_path())
+    url, token = server.settings()
+    print("Servidor: %s" % (url if token else "não configurado (use --server)"))
     for name in learned:
         cfg = MODELS[name]
-        print("  %-12s chave %d,%d  (%s, %s)" % (
+        print("  %-12s chave %d,%d  (%s, %s)%s" % (
             name, cfg["read_key"][0], cfg["read_key"][1],
-            cfg.get("learned_on", "?"), cfg.get("learned_at", "?")))
+            cfg.get("learned_on", "?"), cfg.get("learned_at", "?"),
+            "  [pendente]" if cfg.get("pendente") else ""))
     if not learned:
         print("  nenhum modelo aprendido ainda")
     return 0

@@ -8,6 +8,9 @@ máquina tiver gravado antes de escrever.
 
 Onde fica a pasta, por ordem: variável ECORESET_PASTA; o que foi escolhido
 com set_folder() (guardado em ~/.ecoreset.json); senão ~/EcoReset.
+
+Com um servidor configurado (server.py), este arquivo é a cópia local do banco
+do servidor; modelos com "pendente" ainda não foram enviados.
 """
 
 import datetime
@@ -20,25 +23,37 @@ DB_NAME = "modelos.json"
 DB_TYPE = "ecoreset-modelos"
 
 
+def read_config():
+    try:
+        with open(CONFIG, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_config(**changes):
+    """Atualiza ~/.ecoreset.json mantendo o resto. Só o usuário lê (tem a chave)."""
+    data = read_config()
+    data.update(changes)
+    fd = os.open(CONFIG, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    if os.name != "nt":
+        os.chmod(CONFIG, 0o600)
+
+
 def folder():
     env = os.environ.get("ECORESET_PASTA")
     if env:
         return env
-    try:
-        with open(CONFIG, encoding="utf-8") as f:
-            saved = json.load(f).get("pasta")
-        if saved:
-            return saved
-    except (OSError, ValueError):
-        pass
-    return os.path.join(os.path.expanduser("~"), "EcoReset")
+    return read_config().get("pasta") or os.path.join(os.path.expanduser("~"), "EcoReset")
 
 
 def set_folder(path):
     path = os.path.abspath(os.path.expanduser(path))
     os.makedirs(path, exist_ok=True)
-    with open(CONFIG, "w", encoding="utf-8") as f:
-        json.dump({"pasta": path}, f, ensure_ascii=False, indent=1)
+    write_config(pasta=path)
     return path
 
 
@@ -100,16 +115,38 @@ def _write(models, path):
     os.replace(tmp, path)  # troca de uma vez: quem lê nunca vê o arquivo pela metade
 
 
-def save(name, cfg, path=None):
+def save(name, cfg, path=None, pending=False):
     """Grava (ou atualiza) um modelo no banco, juntando com o que já está lá."""
     path = path or db_path()
     models = load(path)
     cfg = dict(cfg)
     cfg["learned_at"] = datetime.datetime.now().isoformat(timespec="seconds")
     cfg["learned_on"] = platform.node()
+    cfg.pop("pendente", None)
+    if pending:
+        cfg["pendente"] = True
     models[name] = cfg
     _write(models, path)
     return path
+
+
+def mark_sent(name, path=None):
+    path = path or db_path()
+    models = load(path)
+    if name in models and models[name].pop("pendente", None):
+        _write(models, path)
+
+
+def replace_all(entries, path=None):
+    """Troca o banco local por estas entradas (no formato JSON do servidor)."""
+    _write({name: _from_json(e) for name, e in entries.items()}, path or db_path())
+
+
+def to_json(cfg):
+    """Modelo no formato que vai para o servidor (sem a marca de pendente)."""
+    out = _to_json(cfg)
+    out.pop("pendente", None)
+    return out
 
 
 def remove(name, path=None):
@@ -128,6 +165,6 @@ def merge_file(other, path=None):
     new = [n for n in incoming if n not in models]
     for name, cfg in incoming.items():  # na dúvida, vale o aprendido mais recente
         if cfg.get("learned_at", "") >= models.get(name, {}).get("learned_at", ""):
-            models[name] = cfg
+            models[name] = dict(cfg, pendente=True)  # vai no próximo Atualizar
     _write(models, path or db_path())
     return sorted(new)

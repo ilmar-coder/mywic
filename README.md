@@ -121,7 +121,7 @@ completo (contadores em 0) é feito pelo EcoReset, pelo cabo USB. Só o texto do
 log é lido; nada da licença do WICReset é usado.
 
     python -m ecoreset wic-log application.log            # mostra o que aprendeu
-    python -m ecoreset wic-log application.log --save     # grava no banco
+    python -m ecoreset wic-log application.log --save     # grava e envia ao servidor
 
 Na tela: aba **Modelos aprendidos → Importar log do WICReset…**.
 
@@ -129,20 +129,29 @@ Endereços a partir de 0x100 (flags de estado) ficam de fora, porque variam por
 unidade. Se o modelo tiver as mesmas chaves e endereços de um da lista, os
 contadores são lidos como nele.
 
-### Banco de modelos em várias máquinas
+### Banco de modelos no servidor (várias máquinas)
 
-Os modelos aprendidos ficam em `modelos.json`, na pasta do EcoReset
-(`~/EcoReset` por padrão). Para todas as máquinas usarem o mesmo banco, aponte
-a pasta para uma pasta sincronizada (Google Drive, OneDrive, Dropbox, iCloud
-ou pasta de rede). Cada máquina lê o banco ao abrir e, ao salvar, junta com o
-que as outras gravaram.
+O banco fica no site do Raspberry (`https://download.ilmar.com.br`), nas rotas
+`/api/ecoreset/models`, protegidas por uma chave própria do EcoReset (só dá
+acesso a essas rotas). Cada máquina guarda uma cópia local, então o programa
+funciona sem internet.
 
-    python -m ecoreset library --folder "G:\Meu Drive\EcoReset"
-    python -m ecoreset library                          # lista os aprendidos
-    python -m ecoreset library --merge outro/modelos.json
-    python -m ecoreset library --remove XP-9999
+- Configurar (uma vez por máquina): aba **Modelos aprendidos → Servidor…**,
+  com o endereço e a chave. Ou `python -m ecoreset library --server`.
+- **Atualizar**: envia o que foi aprendido sem conexão e baixa o banco. O
+  EcoReset também atualiza sozinho ao abrir.
+- Importar um log do WICReset salva e já envia ao servidor; apagar apaga lá
+  também.
 
-A variável `ECORESET_PASTA` também escolhe a pasta.
+A chave fica no Raspberry em `/www/wwwroot/baixar-go/data/ecoreset_token`
+(veja com `ssh ilmar@192.168.0.69 cat /www/wwwroot/baixar-go/data/ecoreset_token`).
+Para trocar, grave outra no arquivo (vale na hora, sem reiniciar) e informe a
+nova em cada máquina. Nas máquinas ela fica em `~/.ecoreset.json`, legível só
+pelo usuário.
+
+Sem servidor, ainda dá para usar uma pasta sincronizada (**Pasta…**) e
+**Juntar arquivo…** com o `modelos.json` de outra máquina; a variável
+`ECORESET_PASTA` também escolhe a pasta.
 
 ## Modelos
 
