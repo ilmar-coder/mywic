@@ -7,16 +7,16 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from . import __version__, canon, ipp, keyfinder, maintenance, snapshot
+from . import __version__, canon, ipp, keyfinder, library, maintenance, snapshot, wiclog
 from .errors import explain_epson_error, search
-from .models import MODELS, model_names
+from .models import MODELS, model_names, reload_learned
 from .printer import EpsonPrinter, PrinterError, load_image
 from .d4 import D4Error
 from .ivec import MAINTENANCE, CanonUsb, IvecError
 from .snmp import SnmpError
 from .usb import UsbCtrlClient, UsbError
 
-ERRORS = (PrinterError, SnmpError, UsbError, D4Error, ipp.IppError, IvecError, OSError,
+ERRORS = (wiclog.WicLogError, PrinterError, SnmpError, UsbError, D4Error, ipp.IppError, IvecError, OSError,
           ValueError)
 # Mac/Linux pelo libusb; Windows pelo usbprint.sys (winusb.py).
 USB_SUPPORTED = True
@@ -51,8 +51,9 @@ class App(tk.Tk):
 
         ttk.Label(top, text="Modelo:").grid(row=0, column=4, sticky="w", padx=(10, 5))
         self.model = tk.StringVar()
-        ttk.Combobox(top, textvariable=self.model, values=model_names(),
-                     state="readonly", width=10).grid(row=0, column=5, sticky="w")
+        self.model_box = ttk.Combobox(top, textvariable=self.model, values=model_names(),
+                                      state="readonly", width=10)
+        self.model_box.grid(row=0, column=5, sticky="w")
 
         ttk.Label(top, text="Marca:").grid(row=1, column=0, sticky="w", padx=5)
         self.brand = tk.StringVar(value="epson")
@@ -75,6 +76,7 @@ class App(tk.Tk):
         tabs.add(self._tab_waste(tabs), text="Almofada de tinta")
         tabs.add(self._tab_maintenance(tabs), text="Manutenção")
         tabs.add(self._tab_eeprom(tabs), text="EEPROM")
+        tabs.add(self._tab_library(tabs), text="Modelos aprendidos")
 
         self.status = tk.StringVar(value="Pronto.")
         ttk.Label(self, textvariable=self.status, relief="sunken", anchor="w").pack(
@@ -223,6 +225,98 @@ class App(tk.Tk):
             row=4, column=0, columnspan=6, sticky="w", pady=(5, 0))
         self.last_dump = {}
         return f
+
+    def _tab_library(self, parent):
+        f = ttk.Frame(parent, padding=10)
+        self.lib_folder = tk.StringVar()
+        ttk.Label(f, text="Banco:").grid(row=0, column=0, sticky="w")
+        ttk.Label(f, textvariable=self.lib_folder, foreground="#555").grid(
+            row=0, column=1, sticky="w")
+        buttons = ttk.Frame(f)
+        buttons.grid(row=1, column=0, columnspan=2, pady=8, sticky="w")
+        ttk.Button(buttons, text="Importar log do WICReset…",
+                   command=self.import_wic_log).pack(side="left")
+        ttk.Button(buttons, text="Pasta compartilhada…", command=self.choose_folder).pack(
+            side="left", padx=10)
+        ttk.Button(buttons, text="Juntar banco de outra máquina…",
+                   command=self.merge_library).pack(side="left")
+        ttk.Button(buttons, text="Apagar", command=self.remove_learned).pack(
+            side="left", padx=10)
+        self.lib_list = ttk.Treeview(f, columns=("chave", "maquina", "data"), height=8)
+        for col, text, width in (("#0", "Modelo", 120), ("chave", "Chave de leitura", 110),
+                                 ("maquina", "Aprendido em", 150), ("data", "Data", 150)):
+            self.lib_list.heading(col, text=text)
+            self.lib_list.column(col, width=width)
+        self.lib_list.grid(row=2, column=0, columnspan=2, sticky="nsew")
+        f.rowconfigure(2, weight=1)
+        f.columnconfigure(1, weight=1)
+        ttk.Label(f, foreground="#555", wraplength=620, text=(
+            "Faça um reset (pode ser o trial gratuito) no WICReset e importe o "
+            "application.log dele: o EcoReset aprende as chaves e o reset do modelo "
+            "e passa a zerar sozinho pelo cabo USB. Para usar o mesmo banco em vários "
+            "computadores, escolha como pasta compartilhada uma pasta do Google "
+            "Drive, OneDrive ou Dropbox.")).grid(row=3, column=0, columnspan=2,
+                                                 sticky="w", pady=(5, 0))
+        self.refresh_library()
+        return f
+
+    def refresh_library(self):
+        learned = self.guarded(reload_learned) or []
+        self.lib_folder.set(library.db_path())
+        self.model_box["values"] = model_names()
+        self.lib_list.delete(*self.lib_list.get_children())
+        for name in learned:
+            cfg = MODELS[name]
+            self.lib_list.insert("", "end", iid=name, text=name, values=(
+                "%d,%d" % cfg["read_key"], cfg.get("learned_on", ""),
+                cfg.get("learned_at", "")))
+
+    def import_wic_log(self):
+        path = filedialog.askopenfilename(title="application.log do WICReset",
+                                          filetypes=[("Log", "*.log *.txt"), ("Todos", "*")])
+        if not path:
+            return
+        learned = self.guarded(lambda: wiclog.learn_file(path))
+        if not learned:
+            return
+        name, cfg, warnings = learned
+        name = simpledialog.askstring("EcoReset", "Nome do modelo:", initialvalue=name)
+        if not name:
+            return
+        name = name.strip().upper()
+        lines = ["Chave de leitura: %d,%d" % cfg["read_key"],
+                 "Chave de gravação: %s" % cfg["write_key"].decode("latin-1"),
+                 "Reset grava %d endereços" % len(cfg["raw_waste_reset"])]
+        lines += ["Atenção: %s" % w for w in warnings]
+        if name in MODELS and not MODELS[name].get("learned_from"):
+            lines.append("Este nome já está na lista do app: o aprendido vai valer "
+                         "no lugar dele.")
+        if not messagebox.askyesno("EcoReset", "\n".join(lines) + "\n\nSalvar no banco?"):
+            return
+        if self.guarded(lambda: library.save(name, cfg)):
+            self.refresh_library()
+            self.model.set(name)
+
+    def choose_folder(self):
+        path = filedialog.askdirectory(title="Pasta do banco de modelos")
+        if path and self.guarded(lambda: library.set_folder(path)):
+            self.refresh_library()
+
+    def merge_library(self):
+        path = filedialog.askopenfilename(title="modelos.json de outra máquina",
+                                          filetypes=[("Banco", "*.json")])
+        if not path:
+            return
+        new = self.guarded(lambda: library.merge_file(path))
+        if new is not None:
+            self.refresh_library()
+            messagebox.showinfo("EcoReset", "Novos: %s" % (", ".join(new) or "nenhum"))
+
+    def remove_learned(self):
+        for name in self.lib_list.selection():
+            if messagebox.askyesno("EcoReset", "Apagar %s do banco?" % name):
+                self.guarded(lambda: library.remove(name))
+        self.refresh_library()
 
     # ---- execução em segundo plano -------------------------------------------
 

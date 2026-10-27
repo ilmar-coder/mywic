@@ -6,10 +6,10 @@ import json
 import re
 import sys
 
-from . import canon, ipp, keyfinder, maintenance, snapshot
+from . import canon, ipp, keyfinder, library, maintenance, snapshot, wiclog
 from .errors import explain_epson_error, search
 from .ivec import MAINTENANCE, CanonUsb, IvecError
-from .models import MODELS, model_names
+from .models import MODELS, model_names, reload_learned
 from .printer import EpsonPrinter, PrinterError, load_image
 from .snmp import SnmpError
 from .usb import UsbCtrlClient, UsbError
@@ -89,7 +89,24 @@ def main(argv=None):
     wi.add_argument("--include-protected", action="store_true",
                     help="grava também série/MAC (só para backup da mesma impressora)")
     wi.add_argument("--yes", action="store_true")
+    wl = sub.add_parser("wic-log", help="aprende um modelo pelo log de um reset do WICReset")
+    wl.add_argument("log", help="application.log do WICReset")
+    wl.add_argument("--name", help="nome do modelo (se o log não disser)")
+    wl.add_argument("--percent", type=float, default=wiclog.TRIAL_PERCENT,
+                    help="porcentagem em que o reset do log deixou a almofada (trial: 80)")
+    wl.add_argument("--save", action="store_true", help="grava no banco de modelos")
+    lb = sub.add_parser("library", help="banco de modelos aprendidos (pasta compartilhada)")
+    lb.add_argument("--folder", help="usa esta pasta (ex.: uma pasta do Google Drive)")
+    lb.add_argument("--merge", help="junta outro modelos.json neste")
+    lb.add_argument("--remove", help="apaga um modelo aprendido")
     args = ap.parse_args(argv)
+
+    if args.cmd in ("wic-log", "library"):
+        try:
+            return _wic_log(args) if args.cmd == "wic-log" else _library(args)
+        except (wiclog.WicLogError, OSError, ValueError) as e:
+            print("Erro: %s" % e, file=sys.stderr)
+            return 2
 
     if args.cmd == "compare":
         return _compare(args)
@@ -206,6 +223,50 @@ def _compare(args):
             with open(args.save, "w", encoding="utf-8") as f:
                 json.dump(suggestion, f, indent=2, ensure_ascii=False)
             print("Sugestão salva em %s" % args.save)
+    return 0
+
+
+def _describe(name, cfg):
+    print("Modelo: %s" % name)
+    print("  Chave de leitura: %d,%d" % cfg["read_key"])
+    print("  Chave de gravação: %s" % cfg["write_key"].decode("latin-1"))
+    print("  Reset grava: %s" % cfg["raw_waste_reset"])
+    for key, label in (("main_waste", "principal"), ("borderless_waste", "sem margem"),
+                       ("third_waste", "terceira")):
+        if key in cfg:
+            print("  Contador %s: endereços %s, divisor %s"
+                  % (label, cfg[key]["oids"], cfg[key]["divider"]))
+
+
+def _wic_log(args):
+    name, cfg, warnings = wiclog.learn_file(args.log, name=args.name, percent=args.percent)
+    _describe(name, cfg)
+    for w in warnings:
+        print("Atenção: %s" % w)
+    if args.save:
+        print("Salvo no banco: %s" % library.save(name, cfg))
+    else:
+        print("(use --save para gravar no banco)")
+    return 0
+
+
+def _library(args):
+    if args.folder:
+        print("Pasta do banco: %s" % library.set_folder(args.folder))
+    if args.merge:
+        new = library.merge_file(args.merge)
+        print("Juntado. Novos: %s" % (", ".join(new) or "nenhum"))
+    if args.remove:
+        print("Apagado." if library.remove(args.remove) else "Não está no banco.")
+    learned = reload_learned()
+    print("Banco: %s" % library.db_path())
+    for name in learned:
+        cfg = MODELS[name]
+        print("  %-12s chave %d,%d  (%s, %s)" % (
+            name, cfg["read_key"][0], cfg["read_key"][1],
+            cfg.get("learned_on", "?"), cfg.get("learned_at", "?")))
+    if not learned:
+        print("  nenhum modelo aprendido ainda")
     return 0
 
 

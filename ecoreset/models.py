@@ -128,15 +128,41 @@ MODELS = {
 }
 
 
+BUILTIN = dict(MODELS)
+
+
+def reload_learned():
+    """Junta à lista os modelos do banco (library.py). Devolve os nomes aprendidos.
+
+    Um modelo aprendido com o mesmo nome de um da lista toma o lugar dele.
+    """
+    from . import library
+    MODELS.clear()
+    MODELS.update(BUILTIN)
+    try:
+        learned = library.load()
+    except ValueError:
+        learned = {}
+    MODELS.update(learned)
+    return sorted(learned)
+
+
 def model_names():
     return sorted(MODELS)
 
 
 def find_model(text):
-    """Acha o modelo num texto como 'EPSON L3150 Series'. Devolve o nome ou None."""
+    """Acha o modelo num texto como 'EPSON L3150 Series'. Devolve o nome ou None.
+
+    Os aprendidos vêm antes, para valerem sobre um apelido da lista.
+    """
     tokens = text.upper().replace("EPSON", " ").replace("SERIES", " ").split()
-    for name, cfg in MODELS.items():
+    ordered = sorted(MODELS.items(), key=lambda item: not item[1].get("learned_from"))
+    for name, cfg in ordered:
         for candidate in [name] + cfg["aliases"]:
             if candidate in tokens:
                 return name
     return None
+
+
+reload_learned()

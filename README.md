@@ -106,6 +106,44 @@ python -m ecoreset compare antes.json depois.json --save modelo-sugerido.json
 python -m ecoreset snapshot usb -o antes.json --key 74,54   # modelo fora da lista
 ```
 
+## Aprender um modelo pelo log do WICReset
+
+Faça um reset no WICReset (o `trial` gratuito, que deixa a almofada em 80%,
+serve) e importe o log que ele grava em texto:
+
+- Windows: `%APPDATA%\wicreset\application.log`
+- Mac: `~/Library/Application Support/wicreset/`
+
+O log mostra os comandos de gravação que foram para a impressora. Deles o
+EcoReset tira a chave de leitura, a chave de gravação e os endereços do reset,
+e calcula o divisor dos contadores pelo valor do trial. Daí em diante o reset
+completo (contadores em 0) é feito pelo EcoReset, pelo cabo USB. Só o texto do
+log é lido; nada da licença do WICReset é usado.
+
+    python -m ecoreset wic-log application.log            # mostra o que aprendeu
+    python -m ecoreset wic-log application.log --save     # grava no banco
+
+Na tela: aba **Modelos aprendidos → Importar log do WICReset…**.
+
+Endereços a partir de 0x100 (flags de estado) ficam de fora, porque variam por
+unidade. Se o modelo tiver as mesmas chaves e endereços de um da lista, os
+contadores são lidos como nele.
+
+### Banco de modelos em várias máquinas
+
+Os modelos aprendidos ficam em `modelos.json`, na pasta do EcoReset
+(`~/EcoReset` por padrão). Para todas as máquinas usarem o mesmo banco, aponte
+a pasta para uma pasta sincronizada (Google Drive, OneDrive, Dropbox, iCloud
+ou pasta de rede). Cada máquina lê o banco ao abrir e, ao salvar, junta com o
+que as outras gravaram.
+
+    python -m ecoreset library --folder "G:\Meu Drive\EcoReset"
+    python -m ecoreset library                          # lista os aprendidos
+    python -m ecoreset library --merge outro/modelos.json
+    python -m ecoreset library --remove XP-9999
+
+A variável `ECORESET_PASTA` também escolhe a pasta.
+
 ## Modelos
 
 L3150 (L3151, L3160, L3166, L3168), L4160 (L4150 a L4168), L355, L365, L366,
