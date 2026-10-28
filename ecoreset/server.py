@@ -12,6 +12,9 @@ Atualizar.
 """
 
 import json
+import ssl
+import subprocess
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,6 +27,31 @@ TIMEOUT = 15
 
 class ServerError(Exception):
     pass
+
+
+_SSL = None
+_MAC_ROOTS = "/System/Library/Keychains/SystemRootCertificates.keychain"
+
+
+def ssl_context():
+    """Contexto TLS que confere o certificado do servidor.
+
+    O Python empacotado no .app do Mac não acha os certificados do sistema;
+    nesse caso usamos os certificados raiz do próprio macOS (Keychain).
+    """
+    global _SSL
+    if _SSL is None:
+        ctx = ssl.create_default_context()
+        if sys.platform == "darwin" and not ctx.cert_store_stats()["x509_ca"]:
+            try:
+                pem = subprocess.run(
+                    ["/usr/bin/security", "find-certificate", "-a", "-p", _MAC_ROOTS],
+                    capture_output=True, text=True, timeout=20, check=True).stdout
+                ctx.load_verify_locations(cadata=pem)
+            except (OSError, subprocess.SubprocessError, ssl.SSLError):
+                pass  # sem os certificados, a conexão falha com o erro do TLS
+        _SSL = ctx
+    return _SSL
 
 
 def settings():
@@ -55,7 +83,7 @@ def _request(method, path, body=None):
         "User-Agent": "EcoReset/%s" % __version__,
     })
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=TIMEOUT, context=ssl_context()) as resp:
             return json.loads(resp.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as e:
         try:
