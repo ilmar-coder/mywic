@@ -516,12 +516,49 @@ class TestWindowsUsb(unittest.TestCase):
 
         with mock.patch.object(usb.sys, "platform", "win32"), \
                 mock.patch.object(winusb, "device_paths", lambda: ["canon", "epson"]), \
-                mock.patch.object(winusb, "UsbPrintDevice", FakeUsbPrint):
+                mock.patch.object(winusb, "UsbPrintDevice", FakeUsbPrint), \
+                mock.patch.object(winusb, "port_name", lambda path: "USB00" + str(len(path))):
             client = usb.UsbCtrlClient().open()
+            self.assertEqual(client.port, "USB005")  # a da Epson, não a da Canon
             p = EpsonPrinter("USB", client=client)
             self.assertEqual(p.detect(), ("L3250 Series", "ET-2812"))
             self.assertEqual(p.read_eeprom(49), 13)
             client.close()
+
+
+class TestUsbQueue(unittest.TestCase):
+    """Detectar mostra em qual porta/fila a impressora USB está."""
+
+    def test_registry_key_of_usbprint_path(self):
+        from ecoreset import winusb
+        path = r"\\?\usb#vid_04b8&pid_1186#58414142#{28d78fad-5a12-11d1-ae5b-0000f803a8c2}"
+        self.assertEqual(winusb.registry_key(path), (
+            r"SYSTEM\CurrentControlSet\Control\DeviceClasses"
+            r"\{28D78FAD-5A12-11D1-AE5B-0000F803A8C2}"
+            r"\##?#usb#vid_04b8&pid_1186#58414142#{28d78fad-5a12-11d1-ae5b-0000f803a8c2}"
+            r"\#\Device Parameters"))
+
+    def test_windows_queues_by_port(self):
+        from unittest import mock
+        ports = {"EPSON L3250 Series": ["USB003"], "EPSON L3250 Series (Cópia 1)": ["USB001"],
+                 "Microsoft Print to PDF": ["PORTPROMPT:"], "HP": ["USB001", "USB002"]}
+        with mock.patch.object(maintenance.sys, "platform", "win32"), \
+                mock.patch.object(maintenance, "windows_printer_ports", lambda: ports):
+            self.assertEqual(maintenance.queues_for_usb(port="usb001"),
+                             ["EPSON L3250 Series (Cópia 1)", "HP"])
+            self.assertEqual(maintenance.queues_for_usb(port=""), [])
+
+    def test_cups_queues_by_serial_then_model(self):
+        devices = {
+            "EPSON_L3250_Series": "dnssd://EPSON%20L3250%20Series._ipps._tcp.local./",
+            "EPSON_L3250_Series_2": "usb://EPSON/L3250%20Series?serial=584141423430323930",
+            "EPSON_L3250_Outra": "usb://EPSON/L3250%20Series?serial=ZZZ",
+        }
+        m = maintenance.match_cups_queues
+        self.assertEqual(m(devices, "584141423430323930"), ["EPSON_L3250_Series_2"])
+        self.assertEqual(m(devices, "XAAB40290"), ["EPSON_L3250_Series_2"])  # hex no CUPS
+        self.assertEqual(m(devices, "", "L3250 SERIES"),
+                         ["EPSON_L3250_Series_2", "EPSON_L3250_Outra"])
 
 
 class TestEepromImage(unittest.TestCase):
@@ -567,8 +604,10 @@ class TestEepromImage(unittest.TestCase):
 class TestMaintenance(unittest.TestCase):
     def test_jobs(self):
         job = maintenance.nozzle_check_job()
-        self.assertIn(b"\x1b(R\x08\x00\x00REMOTE1NC\x02\x00\x00\x00\x1b\x00\x00\x00", job)
-        self.assertTrue(job.startswith(maintenance.EXIT_PACKET_MODE))
+        self.assertEqual(job, maintenance.EXIT_PACKET_MODE + b"\x1b@\x1b@\x1b(R\x08\x00\x00REMOTE1"
+                         b"NC\x02\x00\x00\x00\x1b\x00\x00\x00\x1b\x00\x0c\x1b\x00\x1b\x00")
+        # nada de ESC @ logo depois do modo remoto (suspeito do looping no Windows)
+        self.assertNotIn(b"\x1b\x00\x00\x00\x1b@", job)
         self.assertIn(b"REMOTE1CH\x02\x00\x00\x00", maintenance.head_cleaning_job())
 
     def test_send_raw_network(self):

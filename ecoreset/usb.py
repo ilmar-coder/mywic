@@ -244,6 +244,8 @@ class UsbCtrlClient:
         self.serial_filter = serial
         self.lib = self.ctx = self.devices = None
         self.device = self.channel = None
+        self.port = ""    # Windows: porta do spooler (USB001...)
+        self.serial = ""  # número de série do USB, para achar a fila no Mac
 
     def open(self):
         if sys.platform == "win32":
@@ -257,6 +259,7 @@ class UsbCtrlClient:
                     continue
                 if self._open_ctrl(device):
                     self.device = device
+                    self.serial = device.serial
                     return self
                 device.close()
         except BaseException:
@@ -285,6 +288,8 @@ class UsbCtrlClient:
             try:
                 if channel.open():
                     self.device, self.channel = device, channel
+                    self.port = winusb.port_name(path)
+                    self.serial = info.get("SN", "")
                     return self
             except (OSError, D4Error):
                 channel.close()

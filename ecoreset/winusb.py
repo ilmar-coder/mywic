@@ -24,6 +24,33 @@ class WinUsbError(OSError):
     pass
 
 
+def registry_key(path):
+    r"""Chave do registro da interface: \\?\usb#... -> ##?#usb#..."""
+    return ("SYSTEM\\CurrentControlSet\\Control\\DeviceClasses\\%s\\%s\\#\\"
+            "Device Parameters" % (GUID_DEVINTERFACE_USBPRINT, "##?#" + path[4:]))
+
+
+def port_name(path):
+    """Porta do spooler desta impressora USB ("USB001"), ou "" se não achar.
+
+    O usbprint.sys grava "Base Name" e "Port Number" nos parâmetros da interface;
+    é a mesma porta que aparece nas propriedades da impressora instalada.
+    """
+    if sys.platform != "win32" or not path.startswith("\\\\?\\"):
+        return ""
+    try:
+        import winreg
+    except ImportError:
+        return ""
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, registry_key(path)) as key:
+            base = winreg.QueryValueEx(key, "Base Name")[0]
+            number = winreg.QueryValueEx(key, "Port Number")[0]
+    except OSError:
+        return ""
+    return "%s%03d" % (base, number)
+
+
 def parse_device_id(raw):
     """IOCTL_USBPRINT_GET_1284_ID: 2 bytes de tamanho (big-endian) + texto."""
     if len(raw) < 2:

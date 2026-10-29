@@ -612,18 +612,39 @@ class App(tk.Tk):
 
     def detect(self):
         self.model.set("")
-        work = self.guarded(lambda: self.session(lambda p: (p.model_string(), p.model)))
+        by_usb = self.conn.get() == "usb"  # lido aqui: a busca roda fora da tela
+
+        def identify(p):
+            text = p.model_string()
+            client = p.snmp
+            queues = []
+            if by_usb:
+                queues = maintenance.queues_for_usb(
+                    port=client.port, serial=client.serial,
+                    model=text.upper().replace("EPSON", "").strip())
+            return text, p.model, getattr(client, "port", ""), queues
+
+        work = self.guarded(lambda: self.session(identify))
         if not work:
             return
 
         def done(result):
-            text, name = result
+            text, name, port, queues = result
+            where = self.where()
+            if port:
+                where += ", porta %s" % port
+            if queues:
+                where += ", impressora instalada \"%s\"" % queues[0]
+                self.winprinter.set(queues[0])  # a mesma na aba Manutenção
+                self.via.set("instalada")
+            elif by_usb:
+                where += ", sem impressora instalada nessa porta"
             if name:
                 self.model.set(name)
-                self.info.set("%s (%s) → parâmetros do %s" % (text, self.where(), name))
+                self.info.set("%s (%s) → parâmetros do %s" % (text, where, name))
             else:
-                self.info.set("%s: modelo não está na lista; escolha um compatível."
-                              % (text or "Sem nome"))
+                self.info.set("%s (%s): modelo não está na lista; escolha um compatível."
+                              % (text or "Sem nome", where))
         self.run("Detectando", work, done)
 
     def read_levels(self):
