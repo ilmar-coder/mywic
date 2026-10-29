@@ -1,0 +1,4 @@
+# EcoReset: deixa o usuário logado abrir impressoras Epson e Canon pelo USB
+# (libusb), sem rodar como root. O CUPS continua imprimindo normalmente.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="04b8", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="04a9", TAG+="uaccess"

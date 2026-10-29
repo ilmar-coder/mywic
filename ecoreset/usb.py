@@ -48,7 +48,8 @@ def _load_libusb():
         except OSError:
             continue
     else:
-        raise UsbError("libusb não encontrado (no Mac: brew install libusb)")
+        raise UsbError("libusb não encontrado (Mac: brew install libusb; "
+                       "Fedora: sudo dnf install libusb1)")
     p, i, u8, u16, ui = (ctypes.c_void_p, ctypes.c_int, ctypes.c_uint8,
                          ctypes.c_uint16, ctypes.c_uint)
     sigs = {

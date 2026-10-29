@@ -4,3 +4,4 @@ dist/
 *.spec
 backup-*.json
 .venv/
+!packaging/ecoreset.spec

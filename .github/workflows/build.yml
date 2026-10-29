@@ -36,3 +36,29 @@ jobs:
         with:
           name: EcoReset-mac
           path: dist/EcoReset-mac.zip
+
+  fedora-rpm:
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: dnf -y install rpm-build python3 python3-tkinter libusb1 cups-client systemd-udev
+      - run: python3 -m unittest discover -s . -p "test_*.py" -v
+      - name: Gerar o RPM
+        run: |
+          VERSION=$(python3 -c "import ecoreset; print(ecoreset.__version__)")
+          rpmbuild -bb packaging/ecoreset.spec \
+            --define "_topdir $PWD/rpmbuild" --define "_sourcedir $PWD" \
+            --define "version $VERSION" --define "release ${{ github.run_number }}"
+          mkdir -p dist && cp rpmbuild/RPMS/noarch/*.rpm dist/
+      - name: Instalar e conferir o RPM
+        run: |
+          dnf -y install ./dist/*.rpm
+          rpm -ql ecoreset
+          cd / && ecoreset code 1726
+          PYTHONPATH=/usr/share/ecoreset python3 -c "import ecoreset.gui, ecoreset.usb, ecoreset.server"
+          test -f /usr/lib/udev/rules.d/70-ecoreset.rules
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EcoReset-fedora-rpm
+          path: dist/*.rpm

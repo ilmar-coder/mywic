@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=EcoReset
+Comment=Manutenção de impressoras Epson e Canon
+Exec=ecoreset
+Icon=ecoreset
+Terminal=false
+Categories=Utility;HardwareSettings;Settings;
+Keywords=impressora;printer;epson;canon;almofada;eeprom;
