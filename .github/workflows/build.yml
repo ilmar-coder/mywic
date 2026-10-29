@@ -49,7 +49,7 @@ jobs:
           VERSION=$(python3 -c "import ecoreset; print(ecoreset.__version__)")
           rpmbuild -bb packaging/ecoreset.spec \
             --define "_topdir $PWD/rpmbuild" --define "_sourcedir $PWD" \
-            --define "version $VERSION" --define "release ${{ github.run_number }}"
+            --define "pkgversion $VERSION" --define "pkgrelease ${{ github.run_number }}"
           mkdir -p dist && cp rpmbuild/RPMS/noarch/*.rpm dist/
       - name: Instalar e conferir o RPM
         run: |

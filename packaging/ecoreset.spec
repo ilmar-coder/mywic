@@ -1,13 +1,13 @@
 # RPM do EcoReset (Fedora). Gerado pelo GitHub Actions; para gerar à mão:
-#   rpmbuild -bb packaging/ecoreset.spec --define "_sourcedir $PWD" --define "version 0.1.0"
-%{!?version: %global version 0.1.0}
-%{!?release: %global release 1}
+#   rpmbuild -bb packaging/ecoreset.spec --define "_sourcedir $PWD" --define "pkgversion 0.1.0"
+%{!?pkgversion: %global pkgversion 0.1.0}
+%{!?pkgrelease: %global pkgrelease 1}
 # o código Python fica em /usr/share/ecoreset; não precisa de .pyc pré-compilado
 %global __brp_python_bytecompile %{nil}
 
 Name:           ecoreset
-Version:        %{version}
-Release:        %{release}%{?dist}
+Version:        %{pkgversion}
+Release:        %{pkgrelease}%{?dist}
 Summary:        Manutenção de impressoras Epson L/EcoTank e Canon
 License:        Proprietary
 URL:            https://github.com/ilmar-coder/mywic
