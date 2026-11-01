@@ -19,7 +19,7 @@ READ_HEAD = b"||\x07\x00"
 LEVEL = 94          # "nível de manutenção" que os resets gravam
 TRIAL_PERCENT = 80  # o reset trial deixa a almofada em 80%
 
-_HEX_RUN = re.compile(r"(?:\b[0-9A-Fa-f]{2}\b[ :,-]?){12,}")
+_HEX_RUN = re.compile(r"(?:\b[0-9A-Fa-f]{2}\b[ :,-]?){11,}")
 _DEC_RUN = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){11,}\b")
 _MODEL_RES = [
     re.compile(r"GUID:\s*(.+?)\s+\d+\s+KEY"),
@@ -54,7 +54,8 @@ def parse(text):
             cmd = run[pos + 4:pos + 20]
             if cmd[2:5] == b"\x42\xBD\x21":
                 rk, wk = (cmd[0], cmd[1]), _unshift(cmd[8:16])
-                if read_key and (rk, wk) != (read_key, write_key):
+                # a chave de leitura pode ter vindo antes, das leituras do log
+                if (read_key and rk != read_key) or (write_key and wk != write_key):
                     raise WicLogError("o log tem resets de mais de uma impressora; "
                                       "use um log com uma só")
                 read_key, write_key = rk, wk

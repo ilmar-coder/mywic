@@ -138,3 +138,30 @@ class TestLibrary(LibraryCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRealLog(LibraryCase):
+    """Log real do WICReset 5.59 (Mac): reset trial pelo USB numa L3250 com o
+    firmware XF26P8. Sem as leituras do número de série nem o endereço de rede."""
+
+    PATH = os.path.join(os.path.dirname(__file__), "data", "wicreset_l3250_trial.log")
+
+    def test_matches_builtin_l3250(self):
+        name, cfg, warnings = wiclog.learn_file(self.PATH)
+        ref = MODELS["ET-2812"]
+        self.assertEqual(name, "L3250 SERIES")
+        self.assertEqual((cfg["read_key"], cfg["write_key"]), (ref["read_key"], ref["write_key"]))
+        self.assertEqual(cfg["raw_waste_reset"], ref["raw_waste_reset"])
+        self.assertEqual(cfg["waste_reset_commit"], {0x100: 0xFE})
+        self.assertTrue(any("ET-2812" in w for w in warnings))
+
+    def test_trial_values_confirm_dividers(self):
+        info = wiclog.parse(open(self.PATH, encoding="utf-8").read())
+        self.assertIn(0x100, info["reads"])  # leitura antes de limpar o bit 0
+        writes = dict(info["writes"])
+        for key in ("main_waste", "borderless_waste", "third_waste"):
+            oids, divider = MODELS["ET-2812"][key]["oids"], MODELS["ET-2812"][key]["divider"]
+            raw = 0
+            for a in reversed(oids):
+                raw = (raw << 8) | writes[a]
+            self.assertAlmostEqual(raw / divider, 80, delta=0.1)  # o trial deixa em 80%
