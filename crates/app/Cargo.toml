@@ -1,0 +1,39 @@
+[package]
+name = "ecoreset"
+description = "EcoReset: manutenção de impressoras Epson e Canon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ecoreset-core = { path = "../core" }
+eframe = "0.37.0"
+rfd = "0.17"
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[dev-dependencies]
+egui_kittest = { version = "0.37.0", features = ["wgpu", "snapshot", "eframe"] }
+
+# ---- Pacote RPM (cargo generate-rpm -p crates/app) ----
+[package.metadata.generate-rpm]
+name = "ecoreset"
+summary = "Manutenção de impressoras Epson L/EcoTank e Canon"
+url = "https://github.com/ilmar-coder/mywic"
+post_install_script = """
+udevadm control --reload-rules >/dev/null 2>&1 || :
+udevadm trigger --subsystem-match=usb --attr-match=idVendor=04b8 >/dev/null 2>&1 || :
+udevadm trigger --subsystem-match=usb --attr-match=idVendor=04a9 >/dev/null 2>&1 || :
+"""
+post_uninstall_script = "udevadm control --reload-rules >/dev/null 2>&1 || :"
+assets = [
+  { source = "target/release/ecoreset", dest = "/usr/bin/ecoreset", mode = "755" },
+  { source = "target/release/ecoreset-cli", dest = "/usr/bin/ecoreset-cli", mode = "755" },
+  { source = "packaging/linux/ecoreset.desktop", dest = "/usr/share/applications/ecoreset.desktop", mode = "644" },
+  { source = "packaging/linux/ecoreset.svg", dest = "/usr/share/icons/hicolor/scalable/apps/ecoreset.svg", mode = "644" },
+  { source = "packaging/linux/70-ecoreset.rules", dest = "/usr/lib/udev/rules.d/70-ecoreset.rules", mode = "644" },
+  { source = "README.md", dest = "/usr/share/doc/ecoreset/README.md", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+libusb1 = "*"
+cups-client = "*"

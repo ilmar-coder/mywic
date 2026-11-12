@@ -1,0 +1,16 @@
+[package]
+name = "ecoreset-cli"
+description = "EcoReset pela linha de comando"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ecoreset-cli"
+path = "src/main.rs"
+
+[dependencies]
+ecoreset-core = { path = "../core" }
+clap = { version = "4", features = ["derive"] }
+rpassword = "7"
+serde_json = { version = "1", features = ["preserve_order"] }

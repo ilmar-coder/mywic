@@ -9,29 +9,32 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: python -m unittest discover -s . -p "test_*.py" -v
-      - run: python -m pip install pyinstaller
-      - run: python -m PyInstaller --noconfirm --onefile --windowed --name EcoReset ecoreset_app.py
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p ecoreset-core
+      - run: cargo build --release -p ecoreset -p ecoreset-cli
+      - name: Arquivos
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/ecoreset.exe dist/EcoReset.exe
+          Copy-Item target/release/ecoreset-cli.exe dist/ecoreset-cli.exe
       - uses: actions/upload-artifact@v4
         with:
           name: EcoReset-windows
-          path: dist/EcoReset.exe
+          path: dist/*
 
   macos:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          python-version: "3.12"
-      - run: python -m unittest discover -s . -p "test_*.py" -v
-      - run: python -m pip install pyinstaller
-      - run: brew install libusb
-      - run: python -m PyInstaller --noconfirm --windowed --name EcoReset --osx-bundle-identifier com.ilmar.ecoreset --add-binary "$(brew --prefix)/lib/libusb-1.0.0.dylib:." ecoreset_app.py
-      - run: ditto -c -k --keepParent dist/EcoReset.app dist/EcoReset-mac.zip
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - run: cargo test -p ecoreset-core
+      - name: App universal
+        run: |
+          ./scripts/package-macos.sh
+          mkdir -p dist && ditto -c -k --keepParent target/EcoReset.app dist/EcoReset-mac.zip
       - uses: actions/upload-artifact@v4
         with:
           name: EcoReset-mac
@@ -39,24 +42,26 @@ jobs:
 
   fedora-rpm:
     runs-on: ubuntu-latest
+    # gerado no próprio Fedora, com as mesmas bibliotecas da estação
     container: fedora:latest
     steps:
+      - name: Dependências
+        run: dnf -y install git gcc pkgconf-pkg-config libusb1-devel openssl-devel libxkbcommon-devel rpm-build cups-client
       - uses: actions/checkout@v4
-      - run: dnf -y install rpm-build python3 python3-tkinter libusb1 cups-client systemd-udev
-      - run: python3 -m unittest discover -s . -p "test_*.py" -v
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p ecoreset-core
+      - run: cargo build --release -p ecoreset -p ecoreset-cli
       - name: Gerar o RPM
         run: |
-          VERSION=$(python3 -c "import ecoreset; print(ecoreset.__version__)")
-          rpmbuild -bb packaging/ecoreset.spec \
-            --define "_topdir $PWD/rpmbuild" --define "_sourcedir $PWD" \
-            --define "pkgversion $VERSION" --define "pkgrelease ${{ github.run_number }}"
-          mkdir -p dist && cp rpmbuild/RPMS/noarch/*.rpm dist/
+          cargo install cargo-generate-rpm --locked
+          cargo generate-rpm -p crates/app --set-metadata 'release = "${{ github.run_number }}%{?dist}"' || cargo generate-rpm -p crates/app
+          mkdir -p dist && cp target/generate-rpm/*.rpm dist/
       - name: Instalar e conferir o RPM
         run: |
           dnf -y install ./dist/*.rpm
           rpm -ql ecoreset
-          cd / && ecoreset code 1726
-          PYTHONPATH=/usr/share/ecoreset python3 -c "import ecoreset.gui, ecoreset.usb, ecoreset.server"
+          ecoreset-cli code 1726
+          ecoreset-cli wic-log crates/core/tests/data/wicreset_l3250_trial.log
           test -f /usr/lib/udev/rules.d/70-ecoreset.rules
       - uses: actions/upload-artifact@v4
         with:
