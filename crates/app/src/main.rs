@@ -208,7 +208,7 @@ impl App {
             via_installed: !printers.is_empty(),
             printers,
             queue,
-            addr: "0".into(),
+            addr: String::new(),
             addr_end: String::new(),
             value: String::new(),
             manual_key: String::new(),
@@ -392,7 +392,12 @@ impl App {
                 if let Some(n) = &name {
                     app.model = n.clone();
                 }
+                let locked = name.as_deref().and_then(|n| by_name(n, &app.models)).is_some_and(|m| m.may_be_locked);
+                let read_now = name.is_some() && (usb_conn || !locked);
                 app.detected = Some(Detected { text, model: name, rows });
+                if read_now {
+                    app.read_levels(); // ler é inofensivo: já mostra quanto a almofada está cheia
+                }
             },
         );
     }
@@ -585,8 +590,38 @@ impl App {
         });
     }
 
-    /// Lê o intervalo dos campos (se ainda não leu) e salva em arquivo.
+    /// Lê a EEPROM inteira e salva na pasta de backups, sem perguntar nada.
+    fn full_backup(&mut self) {
+        self.session(
+            "Backup da EEPROM",
+            |p, pr, _| {
+                let snap = snapshot::take(p, 0, snapshot::DEFAULT_END, "backup completo", &mut |i, n| {
+                    if i % 32 == 0 || i == n {
+                        pr.set(format!("Backup da EEPROM: {i} de {n} endereços"));
+                    }
+                })?;
+                let name = format!("eeprom-{}-{}.json", p.model_name().unwrap_or_else(|| "epson".into()), App::stamp());
+                let path = App::backup_dir().join(name);
+                snap.save(&path.to_string_lossy())?;
+                Ok((path, snap.eeprom.len(), snap.refused.len()))
+            },
+            |app, (path, read, refused)| {
+                let extra = if refused > 0 { format!(" ({refused} recusados pela impressora)") } else { String::new() };
+                app.ee_out = format!("Backup completo: {read} endereços lidos{extra}.\nSalvo em {}", path.display());
+                app.status = format!("Backup salvo em {}", path.display());
+                app.message(format!(
+                    "Backup da EEPROM salvo: {read} endereços{extra}.\n\n{}\n\nEle serve para restaurar depois em \"Regravar de arquivo\".",
+                    path.display()
+                ));
+            },
+        );
+    }
+
+    /// Salva o intervalo dos campos (lendo antes, se preciso). Sem endereço: backup completo.
     fn ee_save(&mut self) {
+        if self.addr.trim().is_empty() && self.addr_end.trim().is_empty() {
+            return self.full_backup();
+        }
         if self.last_dump.is_empty() {
             let Some((start, end)) = self.ee_range() else { return };
             return self.session("Lendo EEPROM para salvar", move |p, _, _| p.dump(start, end), |app, data| {
@@ -1187,14 +1222,29 @@ impl App {
         page_header(ui, Icon::Chip, "EEPROM", "Leitura e gravação da memória da Epson. Modo avançado.");
         let busy = self.busy.is_some();
         card(ui, |ui| {
-            section_title(ui, "Ler e gravar");
+            section_title(ui, "Backup");
             ui.horizontal_wrapped(|ui| {
-                field(ui, "Endereço", &mut self.addr, "0 ou 0x30", 90.0);
+                if primary(ui, Icon::Save, "Fazer backup completo", !busy).clicked() {
+                    self.full_backup();
+                }
+                if button(ui, Kind::Ghost, Some(Icon::Folder), "Abrir pasta de backups", true, false).clicked() {
+                    open_path(&App::backup_dir());
+                }
+            });
+            ui.label(RichText::new(
+                "Lê a memória inteira da impressora (sem digitar endereço) e salva na pasta de backups. Pelo cabo USB leva menos de um minuto.",
+            ).small().color(MUTED));
+        });
+        ui.add_space(8.0);
+        card(ui, |ui| {
+            section_title(ui, "Ler e gravar endereços");
+            ui.horizontal_wrapped(|ui| {
+                field(ui, "Endereço", &mut self.addr, "ex.: 48 ou 0x30", 110.0);
                 field(ui, "Até (opcional)", &mut self.addr_end, "", 90.0);
                 field(ui, "Valor", &mut self.value, "0-255", 70.0);
             });
             ui.horizontal_wrapped(|ui| {
-                if primary(ui, Icon::Download, "Ler", !busy).clicked() {
+                if secondary(ui, Icon::Download, "Ler", !busy).clicked() {
                     self.ee_read();
                 }
                 if secondary(ui, Icon::Pen, "Gravar", !busy).clicked() {

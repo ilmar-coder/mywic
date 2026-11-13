@@ -1047,7 +1047,7 @@ dependencies = [
 
 [[package]]
 name = "ecoreset"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ecoreset-core",
  "eframe",
@@ -1059,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "ecoreset-cli"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "clap",
  "ecoreset-core",
@@ -1069,7 +1069,7 @@ dependencies = [
 
 [[package]]
 name = "ecoreset-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "chrono",
  "fastrand",
