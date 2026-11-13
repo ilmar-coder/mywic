@@ -2,7 +2,12 @@ name: build
 
 on:
   push:
+    branches: ["**"]
+    tags: ["v*"]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   windows:
@@ -67,3 +72,24 @@ jobs:
         with:
           name: EcoReset-fedora-rpm
           path: dist/*.rpm
+
+  # Ao criar uma tag v* (ex.: v0.2.0), publica os arquivos na página de Releases.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos, fedora-rpm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: ls -la dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          body: |
+            **Downloads**
+            - **Windows:** `EcoReset.exe` (tela) e `ecoreset-cli.exe` (linha de comando). Não precisa instalar; o USB usa o driver de impressora do próprio Windows. Na primeira vez o SmartScreen pode avisar: **Mais informações → Executar assim mesmo**.
+            - **Mac (Apple Silicon e Intel):** `EcoReset-mac.zip`, com o libusb embutido.
+            - **Fedora:** `sudo dnf install ./ecoreset-*.rpm` — aparece "EcoReset" no menu e já traz a regra que libera o USB das Epson e Canon.
+
