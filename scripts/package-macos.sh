@@ -12,6 +12,7 @@ for bin in ecoreset ecoreset-cli; do
   lipo -create -output "$APP/Contents/MacOS/$bin" \
     "target/aarch64-apple-darwin/release/$bin" "target/x86_64-apple-darwin/release/$bin"
 done
+cp packaging/icon/ecoreset.icns "$APP/Contents/Resources/ecoreset.icns"
 cat > "$APP/Contents/Info.plist" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -19,6 +20,7 @@ cat > "$APP/Contents/Info.plist" <<PL
 <key>CFBundleName</key><string>EcoReset</string>
 <key>CFBundleIdentifier</key><string>com.ilmar.ecoreset</string>
 <key>CFBundleExecutable</key><string>ecoreset</string>
+<key>CFBundleIconFile</key><string>ecoreset</string>
 <key>CFBundleShortVersionString</key><string>$VERSION</string>
 <key>CFBundleVersion</key><string>$VERSION</string>
 <key>NSHighResolutionCapable</key><true/>
