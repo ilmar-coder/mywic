@@ -87,15 +87,27 @@ impl Transport for UsbCtrlClient {
 impl UsbCtrlClient {
     /// A primeira Epson do USB que responde ao D4 (com `serial`, só essa).
     pub fn open(serial: Option<&str>) -> Result<UsbCtrlClient> {
+        let mut seen = Vec::new();
         for (info, interfaces) in platform::epson_candidates(serial)? {
+            let mut last = String::from("nenhuma interface livre");
             for io in interfaces {
                 match EpsonCtrlChannel::open(io) {
                     Ok(channel) => return Ok(UsbCtrlClient { channel, info }),
-                    Err(_) => continue,
+                    Err((_, e)) => last = e.message,
                 }
             }
+            let place = if info.port.is_empty() { String::new() } else { format!(" na {}", info.port) };
+            seen.push(format!("{}{place}: {last}", info.product));
         }
-        Err(Error::new(platform::NOT_FOUND))
+        if seen.is_empty() {
+            return Err(Error::new(platform::NOT_FOUND));
+        }
+        // achou a Epson, mas ela não respondeu: diz o que aconteceu com cada uma
+        Err(Error::new(format!(
+            "a Epson foi encontrada no USB, mas não respondeu ({}). Feche o monitor de status e \
+             outros programas da Epson, desligue e ligue a impressora e tente de novo.",
+            seen.join("; ")
+        )))
     }
 
     /// Para injetar um aparelho já aberto (testes, outras camadas).

@@ -49,6 +49,32 @@ enum Brand {
 type Job = Box<dyn FnOnce(&mut App) + Send>;
 type Then = Box<dyn FnOnce(&mut App)>;
 
+/// Registro de uso e erros (EcoReset/ecoreset.log), para mandar quando algo falhar.
+fn log_path() -> PathBuf {
+    library::folder().join("ecoreset.log")
+}
+
+fn log_line(text: &str) {
+    use std::io::Write;
+    let path = log_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    // guarda só o fim do registro para não crescer sem limite
+    if std::fs::metadata(&path).map(|m| m.len() > 512 * 1024).unwrap_or(false) {
+        let _ = std::fs::rename(&path, path.with_extension("log.1"));
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{} {}", ecoreset_core::printer::now_iso(), text);
+    }
+}
+
+/// Abre um arquivo ou pasta no programa padrão do sistema.
+fn open_path(path: &std::path::Path) {
+    let program = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let _ = std::process::Command::new(program).arg(path).spawn();
+}
+
 /// Impressora detectada, mostrada na barra lateral.
 struct Detected {
     text: String,
@@ -205,7 +231,11 @@ impl App {
     }
 
     fn error(&mut self, e: impl std::fmt::Display) {
+        if self.tab == Tab::Eeprom {
+            self.ee_out = format!("Erro: {e}");
+        }
         self.status = "Erro.".into();
+        log_line(&format!("ERRO {}", e));
         self.dialogs.push(Dialog::Message { text: e.to_string(), error: true });
     }
 
@@ -232,6 +262,8 @@ impl App {
         self.cancel.store(false, Ordering::Relaxed);
         *self.progress.lock().unwrap() = String::new();
         let (tx, cancel) = (self.tx.clone(), self.cancel.clone());
+        let label = label.to_string();
+        log_line(&format!("início: {label} ({})", self.where_text()));
         let progress = Progress { text: self.progress.clone(), ctx: self.ctx.clone() };
         std::thread::spawn(move || {
             let result = work(&progress, &cancel);
@@ -241,9 +273,10 @@ impl App {
                 match result {
                     Ok(v) => {
                         app.status = "Pronto.".into();
+                        log_line(&format!("ok: {label}"));
                         done(app, v);
                     }
-                    Err(e) => app.error(e),
+                    Err(e) => app.error(format!("{label}: {e}")),
                 }
             });
             let _ = tx.send(job);
@@ -536,18 +569,8 @@ impl App {
     // ---- ações: EEPROM ---------------------------------------------------------
 
     fn ee_read(&mut self) {
-        let (start, end) = match (|| -> Result<(u16, u16)> {
-            let s = parse_int(&self.addr).ok_or_else(|| Error::new("endereço inválido (use decimal ou 0x..)"))? as u16;
-            let e = if self.addr_end.trim().is_empty() { s } else { parse_int(&self.addr_end).ok_or_else(|| Error::new("endereço final inválido"))? as u16 };
-            Ok((s, e))
-        })() {
-            Ok(v) => v,
-            Err(e) => return self.error(e),
-        };
-        self.session("Lendo EEPROM", move |p, _, _| p.dump(start, end), |app, data| {
-            app.ee_out = data.iter().map(|(a, v)| format!("{a:5} (0x{a:04X}): {v:3} (0x{v:02X})")).collect::<Vec<_>>().join("\n");
-            app.last_dump = data;
-        });
+        let Some((start, end)) = self.ee_range() else { return };
+        self.session("Lendo EEPROM", move |p, _, _| p.dump(start, end), |app, data| app.show_dump(data));
     }
 
     fn ee_write(&mut self) {
@@ -562,14 +585,58 @@ impl App {
         });
     }
 
+    /// Lê o intervalo dos campos (se ainda não leu) e salva em arquivo.
     fn ee_save(&mut self) {
         if self.last_dump.is_empty() {
-            return self.error("Leia um intervalo primeiro.");
+            let Some((start, end)) = self.ee_range() else { return };
+            return self.session("Lendo EEPROM para salvar", move |p, _, _| p.dump(start, end), |app, data| {
+                app.show_dump(data);
+                app.ee_save();
+            });
         }
-        let Some(path) = rfd::FileDialog::new().set_file_name("leitura-eeprom.json").save_file() else { return };
-        let b = Backup { printer: self.where_text(), model: Some(self.model.clone()).filter(|m| !m.is_empty()), date: ecoreset_core::printer::now_iso(), eeprom: self.last_dump.clone() };
-        if let Err(e) = b.save(&path.to_string_lossy()) {
-            self.error(e);
+        let name = format!("leitura-eeprom-{}.json", App::stamp());
+        let Some(path) = rfd::FileDialog::new().set_title("Salvar leitura da EEPROM").set_file_name(name).add_filter("Leitura", &["json"]).save_file() else {
+            return;
+        };
+        let b = Backup {
+            printer: self.where_text(),
+            model: Some(self.model.clone()).filter(|m| !m.is_empty()),
+            date: ecoreset_core::printer::now_iso(),
+            eeprom: self.last_dump.clone(),
+        };
+        match b.save(&path.to_string_lossy()) {
+            Ok(()) => {
+                self.status = format!("Leitura salva em {}", path.display());
+                self.message(format!("{} endereço(s) salvos em:\n{}", b.eeprom.len(), path.display()));
+            }
+            Err(e) => self.error(e),
+        }
+    }
+
+    fn show_dump(&mut self, data: Vec<(u16, u8)>) {
+        self.ee_out = data.iter().map(|(a, v)| format!("{a:5} (0x{a:04X}): {v:3} (0x{v:02X})")).collect::<Vec<_>>().join("\n");
+        self.last_dump = data;
+    }
+
+    fn ee_range(&mut self) -> Option<(u16, u16)> {
+        let parsed = (|| -> Result<(u16, u16)> {
+            let s = parse_int(&self.addr).filter(|n| *n <= 0xFFFF).ok_or_else(|| Error::new("endereço inválido (use decimal ou 0x..)"))? as u16;
+            let e = if self.addr_end.trim().is_empty() {
+                s
+            } else {
+                parse_int(&self.addr_end).filter(|n| *n <= 0xFFFF).ok_or_else(|| Error::new("endereço final inválido"))? as u16
+            };
+            if e < s {
+                return Err(Error::new("o endereço final é menor que o inicial"));
+            }
+            Ok((s, e))
+        })();
+        match parsed {
+            Ok(r) => Some(r),
+            Err(e) => {
+                self.error(e);
+                None
+            }
         }
     }
 
@@ -992,6 +1059,11 @@ impl App {
             return;
         }
         let busy = self.busy.is_some();
+        let locked = by_name(&self.model, &self.models).is_some_and(|m| m.may_be_locked);
+        if !self.usb && locked {
+            banner(ui, Icon::Usb, ORANGE, "Este modelo (família da L3250) bloqueia a leitura e a gravação dos contadores pela rede, por causa do firmware. Ligue o cabo USB e escolha \"Cabo USB\" na barra lateral. Pela rede só o reset temporário funciona.");
+            ui.add_space(8.0);
+        }
         card(ui, |ui| {
             if self.levels.is_empty() {
                 ui.vertical_centered(|ui| {
@@ -1339,6 +1411,11 @@ impl eframe::App for App {
                     ui.painter().circle_filled(r.center(), 3.5, GREEN);
                 }
                 ui.label(RichText::new(text).small().color(MUTED));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(egui::Button::new(RichText::new("Ver registro").small().color(MUTED)).frame(false)).clicked() {
+                        open_path(&log_path());
+                    }
+                });
             });
         });
         egui::Panel::left("lado")
