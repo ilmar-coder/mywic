@@ -161,6 +161,7 @@ pub fn get_printer_attributes(url: &str) -> Result<Attrs> {
     // impressoras usam certificado próprio: sem conferir a cadeia
     let tls = ureq::tls::TlsConfig::builder()
         .provider(ureq::tls::TlsProvider::NativeTls)
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
         .disable_verification(true)
         .build();
     let agent: ureq::Agent = ureq::Agent::config_builder()

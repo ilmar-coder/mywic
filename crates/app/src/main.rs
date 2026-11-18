@@ -369,9 +369,12 @@ impl App {
                 } else {
                     Vec::new()
                 };
-                Ok((text, p.model_name(), info.port, queues, serial))
+                // ler é inofensivo: já mostra quanto a almofada está cheia (na mesma conexão)
+                let locked = p.model.as_ref().is_some_and(|m| m.may_be_locked);
+                let levels = if p.model.is_some() && (usb_conn || !locked) { p.waste_levels().unwrap_or_default() } else { Vec::new() };
+                Ok((text, p.model_name(), info.port, queues, serial, levels))
             },
-            move |app, (text, name, port, queues, serial)| {
+            move |app, (text, name, port, queues, serial, levels)| {
                 let mut rows = vec![("Conexão".to_string(), app.where_text())];
                 if !port.is_empty() {
                     rows.push(("Porta".into(), port));
@@ -392,11 +395,9 @@ impl App {
                 if let Some(n) = &name {
                     app.model = n.clone();
                 }
-                let locked = name.as_deref().and_then(|n| by_name(n, &app.models)).is_some_and(|m| m.may_be_locked);
-                let read_now = name.is_some() && (usb_conn || !locked);
                 app.detected = Some(Detected { text, model: name, rows });
-                if read_now {
-                    app.read_levels(); // ler é inofensivo: já mostra quanto a almofada está cheia
+                if !levels.is_empty() {
+                    app.levels = levels;
                 }
             },
         );

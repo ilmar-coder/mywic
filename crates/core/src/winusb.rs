@@ -195,7 +195,7 @@ mod imp {
             let mut buf = vec![0u8; 1024];
             let h = self.handle;
             let ptr = buf.as_mut_ptr();
-            let n = self.io(2000, |ov| unsafe {
+            let n = self.io(1000, |ov| unsafe {
                 DeviceIoControl(h, IOCTL_USBPRINT_GET_1284_ID, null(), 0, ptr.cast(), 1024, null_mut(), ov)
             })?;
             Ok(parse_device_id(&buf[..n as usize]))

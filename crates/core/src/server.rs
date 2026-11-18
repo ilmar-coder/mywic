@@ -40,7 +40,11 @@ pub fn configure(url: &str, token: &str) -> Result<()> {
 
 fn agent() -> ureq::Agent {
     // TLS do próprio sistema: usa os certificados do Windows, do Mac e do Linux
-    let tls = ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::NativeTls).build();
+    let tls = ureq::tls::TlsConfig::builder()
+        .provider(ureq::tls::TlsProvider::NativeTls)
+        // os certificados do próprio sistema (com a lista embutida do ureq o Windows recusa)
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+        .build();
     ureq::Agent::config_builder()
         .tls_config(tls)
         .timeout_global(Some(Duration::from_secs(15)))

@@ -72,6 +72,10 @@ impl D4 {
                 return Err(Error::new("a impressora não respondeu pelo USB"));
             }
             let chunk = self.t.read(left)?;
+            if chunk.is_empty() {
+                // o driver do Windows volta na hora sem dados: espera um pouco em vez de girar
+                std::thread::sleep(Duration::from_millis(3));
+            }
             self.buffer.extend(chunk);
         }
         let rest = self.buffer.split_off(n);
