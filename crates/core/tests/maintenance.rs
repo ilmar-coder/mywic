@@ -36,12 +36,12 @@ fn send_raw_network() {
 fn cups_queues_by_serial_then_model() {
     let text = "dispositivo para Canon_G2060_series_2: ippusb://Canon%20G2060%20series._ipp._tcp.local./?uuid=0\n\
                 device for EPSON_L3250_Series: dnssd://EPSON%20L3250%20Series._ipps._tcp.local./\n\
-                dispositivo para EPSON_L3250_Series_2: usb://EPSON/L3250%20Series?serial=584141423430323930\n\
+                dispositivo para EPSON_L3250_Series_2: usb://EPSON/L3250%20Series?serial=414243443132333435\n\
                 device for EPSON_L3250_Outra: usb://EPSON/L3250%20Series?serial=ZZZ";
     let devices = maintenance::parse_lpstat_v(text);
     assert_eq!(devices.len(), 4);
     let m = |s: &str, model: &str| maintenance::match_cups_queues(&devices, s, model);
-    assert_eq!(m("584141423430323930", ""), vec!["EPSON_L3250_Series_2"]);
-    assert_eq!(m("XAAB40290", ""), vec!["EPSON_L3250_Series_2"]); // hex no CUPS
+    assert_eq!(m("414243443132333435", ""), vec!["EPSON_L3250_Series_2"]);
+    assert_eq!(m("ABCD12345", ""), vec!["EPSON_L3250_Series_2"]); // hex no CUPS
     assert_eq!(m("", "L3250 SERIES"), vec!["EPSON_L3250_Series_2", "EPSON_L3250_Outra"]);
 }

@@ -45,14 +45,12 @@ passa a fazer o reset completo sozinho, pelo cabo USB. Só o texto do log é lid
 
 ### Banco no servidor
 
-Os modelos aprendidos vão para o banco do site (`https://download.ilmar.com.br`,
-rotas `/api/ecoreset/models`, chave própria). Em cada máquina, uma vez:
-**Modelos aprendidos → Servidor…**, com o endereço e a chave. O EcoReset atualiza
-ao abrir; o que for aprendido sem internet sobe no próximo **Atualizar**.
-
-A chave fica no Raspberry:
-
-    ssh ilmar@192.168.0.69 cat /www/wwwroot/baixar-go/data/ecoreset_token
+Os modelos aprendidos podem ir para um banco num servidor (rotas
+`/api/ecoreset/models`, protegidas por uma chave própria, enviada no cabeçalho
+`X-EcoReset-Token`). Em cada máquina, uma vez: **Modelos aprendidos →
+Servidor…**, com o endereço e a chave, que quem administra o servidor fornece. O
+EcoReset atualiza ao abrir; o que for aprendido sem internet sobe no próximo
+**Atualizar**. Sem servidor, tudo fica num arquivo local (`EcoReset/modelos.json`).
 
 ## Instalar
 

@@ -103,8 +103,8 @@ fn temporary_reset_and_serial_fields() {
     assert_eq!(fake.0.lock().unwrap().temp_resets, 1);
     assert!(p.temporary_reset(Some("ERRADO1234")).is_err());
     // L3250 real: série no campo 0x40
-    let st = parse_status(b"\x00@BDC ST2\r\n\x10\x00\x01\x01\x04\x19\x01\x00\x40\x0aXAAB402930");
-    assert_eq!(st[&0x40], b"XAAB402930");
+    let st = parse_status(b"\x00@BDC ST2\r\n\x10\x00\x01\x01\x04\x19\x01\x00\x40\x0aABCD123456");
+    assert_eq!(st[&0x40], b"ABCD123456");
     fake.set(|s| s.serial_field = 0x40);
     assert_eq!(p.serial_number().unwrap(), "X5NY012345");
 }
