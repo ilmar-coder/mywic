@@ -40,6 +40,14 @@ enum Tab {
     Library,
 }
 
+/// Por onde mandar o teste de bicos e a limpeza.
+#[derive(Clone, Copy, PartialEq)]
+enum Via {
+    Usb,
+    Installed,
+    Network,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Brand {
     Epson,
@@ -163,7 +171,7 @@ struct App {
     // almofada
     levels: Vec<(String, f64)>,
     // manutenção
-    via_installed: bool,
+    via: Via,
     printers: Vec<String>,
     queue: String,
     // eeprom
@@ -205,7 +213,7 @@ impl App {
             diag: None,
             lookup: String::new(),
             levels: Vec::new(),
-            via_installed: !printers.is_empty(),
+            via: Via::Usb,
             printers,
             queue,
             addr: String::new(),
@@ -382,7 +390,7 @@ impl App {
                 if let Some(q) = queues.first() {
                     rows.push(("Instalada como".into(), q.clone()));
                     app.queue = q.clone(); // a mesma na aba Manutenção
-                    app.via_installed = true;
+                    // a mesma na aba Manutenção (o envio padrão continua direto pelo cabo)
                 } else if usb_conn {
                     rows.push(("Instalada como".into(), "nenhuma nessa porta".into()));
                 }
@@ -532,22 +540,34 @@ impl App {
             (Brand::Epson, true) => maintenance::nozzle_check_job(),
             (Brand::Epson, false) => maintenance::head_cleaning_job(),
         };
-        let (installed, queue, host, canon_brand) = (self.via_installed, self.queue.clone(), self.host.trim().to_string(), self.brand == Brand::Canon);
-        if installed && queue.is_empty() {
+        let via = if self.brand == Brand::Canon && self.via == Via::Usb { Via::Installed } else { self.via };
+        let (queue, host, canon_brand) = (self.queue.clone(), self.host.trim().to_string(), self.brand == Brand::Canon);
+        if via == Via::Installed && queue.is_empty() {
             return self.error("Escolha a impressora.");
         }
-        if !installed && host.is_empty() {
+        if via == Via::Network && host.is_empty() {
             return self.error("Digite o IP da impressora.");
         }
-        let send = move || -> Result<()> {
+        let send = move || -> Result<String> {
             if canon_brand {
                 // os modelos só-IVEC ignorariam o trabalho
-                let url = if installed { ipp::find_queue_url(&queue)? } else { format!("ipp://{host}:631/ipp/print") };
+                let url = if via == Via::Installed { ipp::find_queue_url(&queue)? } else { format!("ipp://{host}:631/ipp/print") };
                 canon::check_bjl(&url)?;
             }
-            if installed { maintenance::send_raw_installed(&queue, &job) } else { maintenance::send_raw_network(&host, &job) }
+            match via {
+                Via::Usb => maintenance::send_raw_usb(usb::EPSON_VENDOR, &job).map(|p| format!("pelo cabo USB ({p})")),
+                Via::Installed => maintenance::send_raw_installed(&queue, &job).map(|_| format!("para \"{queue}\"")),
+                Via::Network => maintenance::send_raw_network(&host, &job).map(|_| format!("para {host}")),
+            }
         };
-        let go = move |app: &mut App| app.spawn(&format!("Enviando {}", label.to_lowercase()), move |_, _| send(), move |app, _| app.status = format!("{label} enviado."));
+        let go = move |app: &mut App| {
+            app.spawn(&format!("Enviando {}", label.to_lowercase()), move |_, _| send(), move |app, place| {
+                app.status = format!("{label} enviado {place}.");
+                app.message(format!(
+                    "{label} enviado {place}.\n\nSe a impressora não reagir em alguns segundos, tente outro caminho em \"Enviar para\" e me mande o registro (Ver registro)."
+                ));
+            })
+        };
         if nozzle {
             go(self);
         } else {
@@ -1175,9 +1195,18 @@ impl App {
         } else {
             card(ui, |ui| {
                 section_title(ui, "Enviar para");
-                segmented(ui, &mut self.via_installed, &[(true, Icon::Printer, "Impressora instalada"), (false, Icon::Wifi, "Rede (IP)")], false);
+                if self.brand == Brand::Canon && self.via == Via::Usb {
+                    self.via = Via::Installed;
+                }
+                let mut options = vec![(Via::Installed, Icon::Printer, "Impressora instalada"), (Via::Network, Icon::Wifi, "Rede (IP)")];
+                if self.brand == Brand::Epson {
+                    options.insert(0, (Via::Usb, Icon::Usb, "Cabo USB (direto)"));
+                }
+                segmented(ui, &mut self.via, &options, false);
                 ui.add_space(4.0);
-                if self.via_installed {
+                if self.via == Via::Usb {
+                    ui.label(RichText::new("Manda direto para a Epson ligada no cabo, sem passar pela fila do sistema nem pelo driver.").small().color(MUTED));
+                } else if self.via == Via::Installed {
                     let label = ui.label(RichText::new("Impressora do computador (USB ou rede)").small().color(MUTED));
                     egui::ComboBox::from_id_salt("fila")
                         .selected_text(if self.queue.is_empty() { "nenhuma instalada" } else { &self.queue })

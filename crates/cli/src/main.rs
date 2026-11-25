@@ -36,9 +36,9 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
-    /// Teste de bicos pela rede (IP) ou por uma impressora instalada (--printer)
+    /// Teste de bicos pela rede (IP), direto pelo cabo ("usb") ou por uma impressora instalada (--printer)
     Nozzle { host: Option<String>, #[arg(long)] printer: Option<String> },
-    /// Limpeza de cabeça pela rede (IP) ou por uma impressora instalada (--printer)
+    /// Limpeza de cabeça pela rede (IP), direto pelo cabo ("usb") ou por uma impressora instalada (--printer)
     Clean { host: Option<String>, #[arg(long)] printer: Option<String> },
     /// Reset temporário (firmware bloqueado)
     TempReset {
@@ -292,6 +292,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
             let job = if nozzle { maintenance::nozzle_check_job() } else { maintenance::head_cleaning_job() };
             match (host, printer) {
                 (_, Some(q)) => maintenance::send_raw_installed(q, &job)?,
+                (Some(h), None) if h.eq_ignore_ascii_case("usb") => {
+                    maintenance::send_raw_usb(usb::EPSON_VENDOR, &job)?;
+                }
                 (Some(h), None) => maintenance::send_raw_network(h, &job)?,
                 _ => return Err(Error::new("informe o IP ou --printer NOME")),
             }

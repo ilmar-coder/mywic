@@ -54,6 +54,22 @@ pub fn send_raw_network(host: &str, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Envia o trabalho direto pelo cabo USB, na interface de impressora, sem passar
+/// pela fila do sistema nem pelo driver do fabricante (como o escputil faz com o
+/// dispositivo cru). Devolve o nome do aparelho que recebeu.
+pub fn send_raw_usb(vendor: u16, data: &[u8]) -> Result<String> {
+    let mut list = crate::usb::open_printer_interfaces(vendor)?;
+    if list.is_empty() {
+        bail!(
+            "nenhuma impressora livre no cabo USB (está ligada? se estiver imprimindo ou com o monitor \
+             de status da Epson aberto, feche e tente de novo)"
+        );
+    }
+    let (info, mut io) = list.remove(0);
+    io.write(data)?;
+    Ok(info.product)
+}
+
 /// Impressoras instaladas no sistema (vazio se não houver spooler).
 pub fn installed_printers() -> Vec<String> {
     if cfg!(windows) { windows_printer_ports().into_iter().map(|(n, _)| n).collect() } else { cups_printers() }
